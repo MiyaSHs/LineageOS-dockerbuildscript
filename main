@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -e
+
+### helpful scripts imported by other files
+source ./scripts/checkdeps
+
+### build config, 
+### check https://github.com/lineageos4microg/docker-lineage-cicd/wiki
+### if confused
+
+DEVICE_LIST=""
+BRANCH_NAME=""
+SIGNATURE_SPOOFING=""
+SIGN_BUILDS=""
+CCACHE_SIZE=""
+PARALLEL_JOBS=""
+
