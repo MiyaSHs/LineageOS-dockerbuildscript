@@ -47,8 +47,19 @@ cat > "$USERSCRIPTS_DIR/before.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /srv/src
+TOP="$PWD"
+if [[ ! -d "$TOP/.repo" ]]; then
+  TOP="$(find /srv/src -maxdepth 4 -type d -name .repo -print -quit 2>/dev/null | xargs -r dirname)"
+fi
+if [[ -z "$TOP" || ! -d "$TOP/.repo" ]]; then
+  echo "[before.sh] ERROR: Could not locate repo top (.repo). PWD=$PWD"
+  echo "[before.sh] Contents of /srv/src:"
+  ls -la /srv/src || true
+  exit 2
+fi
+cd "$TOP"
 
+# These env vars are passed from docker run
 : "${ROOT_METHOD:=none}"
 : "${DEVICE_LIST:=}"
 
@@ -57,6 +68,7 @@ if [[ "$ROOT_METHOD" == "none" ]]; then
   exit 0
 fi
 
+# Root integration here is device-specific and assumes a single device codename.
 if [[ "$DEVICE_LIST" == *","* || "$DEVICE_LIST" == *" "* ]]; then
   echo "[before.sh] Multiple devices in DEVICE_LIST='$DEVICE_LIST'. Root integration expects a single device build."
   exit 2
@@ -64,19 +76,24 @@ fi
 
 DEFCONFIG_NAME="${DEVICE_LIST}_GKI.config"
 
-KCONF="$(find . -path "*/arch/arm64/configs/vendor/${DEFCONFIG_NAME}" -print -quit || true)"
+KCONF="$(find . -type f -path "*/arch/arm64/configs/vendor/${DEFCONFIG_NAME}" -print -quit 2>/dev/null || true)"
 if [[ -z "$KCONF" ]]; then
-  echo "[before.sh] Could not find ${DEFCONFIG_NAME}."
+  echo "[before.sh] ERROR: Could not find ${DEFCONFIG_NAME} under arch/arm64/configs/vendor/"
+  echo "[before.sh] Debug: showing any matching *GKI.config files:"
+  find . -type f -path "*/arch/arm64/configs/vendor/*_GKI.config" -maxdepth 10 2>/dev/null | head -n 50 || true
   exit 3
 fi
 
 KERNEL_DIR="$(realpath "$(dirname "$KCONF")/../../../..")"
 DEFCONFIG_PATH="$(realpath "$KCONF")"
 
+echo "[before.sh] Repo top:   $TOP"
 echo "[before.sh] Kernel dir: $KERNEL_DIR"
 echo "[before.sh] Defconfig:  $DEFCONFIG_PATH"
 
 cd "$KERNEL_DIR"
+
+# Keep builds reproducible: always start clean in the kernel repo
 git reset --hard
 git clean -fdx
 
