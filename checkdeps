@@ -18,5 +18,3 @@ check_deps() {
 
     echo "Docker found"
 }
-
-check_deps
