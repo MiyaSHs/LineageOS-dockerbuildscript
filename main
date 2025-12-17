@@ -13,6 +13,8 @@ SIGN_BUILDS=""
 CCACHE_SIZE=""
 PARALLEL_JOBS=""
 
+check_deps
+
 prompt_nonempty() {
   local var_name="$1"
   local prompt="$2"
