@@ -5,14 +5,6 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 ### helpful scripts imported by other files
 source ./scripts/checkdeps
-
-DEVICE_LIST=""
-BRANCH_NAME=""
-SIGNATURE_SPOOFING=""
-SIGN_BUILDS=""
-CCACHE_SIZE=""
-PARALLEL_JOBS=""
-
 check_deps
 
 prompt_nonempty() {
