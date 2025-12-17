@@ -44,8 +44,8 @@ main() {
   export ROOT_METHOD
 
   case "$BUILD_FLAVOR" in
-    base)   exec "$PROJECT_DIR/buildscripts/build-lineageos-base" ;;
-    microg) exec "$PROJECT_DIR/buildscripts/build-lineageos-microg" ;;
+    base)   exec bash "$PROJECT_DIR/buildscripts/build-lineageos-base" ;;
+    microg) exec bash "$PROJECT_DIR/buildscripts/build-lineageos-microg" ;;
   esac
 }
 
