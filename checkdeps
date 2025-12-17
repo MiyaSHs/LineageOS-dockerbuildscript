@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -e
+
+check_deps() {
+    echo "Checking dependencies..."
+
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "- Docker not found"
+        exit 1
+    fi
+
+    if ! docker info >/dev/null 2>&1; then
+        echo "- Docker is installed but not usable"
+        echo "   Is the docker daemon running?"
+        echo "   Is your user in the docker group?"
+        exit 1
+    fi
+
+    echo "Docker found"
+}
+
+check_deps
