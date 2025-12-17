@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -e
 
-# Load variables
-source ../checkdeps
-
 ROOTDIR=./lineageos-base
 mkdir -p "$ROOTDIR/src" "$ROOTDIR/zips" "$ROOTDIR/logs" "$ROOTDIR/ccache"
 
