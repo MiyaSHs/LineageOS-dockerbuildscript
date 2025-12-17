@@ -32,7 +32,6 @@ mkdir -p \
 cat > "$LOCAL_MANIFESTS_DIR/00_microg.xml" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest>
-  <remote name="github" fetch="https://github.com/" />
   <project
       path="vendor/partner_gms"
       name="lineageos4microg/android_vendor_partner_gms"
