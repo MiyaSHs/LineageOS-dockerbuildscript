@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$PROJECT_DIR/main"
+source "$PROJECT_DIR/scripts/bootstrap.sh"
 
 : "${DEVICE_LIST:=}"
 : "${BRANCH_NAME:=}"
