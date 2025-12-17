@@ -1,6 +1,17 @@
+# VARIABLES - saved config for LineageOS docker builds
+# This file is sourced by main/build scripts.
+
 DEVICE_LIST=""
 BRANCH_NAME=""
-SIGNATURE_SPOOFING=""
-SIGN_BUILDS=""
-CCACHE_SIZE=""
-PARALLEL_JOBS=""
+
+# microG related: no | restricted | yes
+SIGNATURE_SPOOFING="restricted"
+
+# true | false
+SIGN_BUILDS="true"
+
+# e.g. 50G, 100G
+CCACHE_SIZE="100G"
+
+# integer, e.g. 4, 8, 16
+PARALLEL_JOBS="2"
