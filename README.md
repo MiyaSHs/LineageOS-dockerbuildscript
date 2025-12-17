@@ -1,0 +1,1 @@
+WIP script to automate docker building lineageos, with options whether to build base or with microg, and extra (currently trying root selection and applying, and later gonna try kernel optimizing, maybe even easy way to add system apps)
