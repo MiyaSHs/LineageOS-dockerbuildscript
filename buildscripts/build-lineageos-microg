@@ -2,8 +2,16 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$PROJECT_DIR/checkdeps"
+source "$PROJECT_DIR/main"
 check_deps
+
+: "${DEVICE_LIST:=}"
+: "${BRANCH_NAME:=}"
+: "${SIGNATURE_SPOOFING:=restricted}"
+: "${SIGN_BUILDS:=true}"
+: "${CCACHE_SIZE:=50G}"
+: "${PARALLEL_JOBS:=8}"
+: "${ROOT_METHOD:=none}"
 
 WORKDIR="$PROJECT_DIR/work"
 SRC_DIR="$WORKDIR/src"
@@ -42,6 +50,9 @@ cat > "$USERSCRIPTS_DIR/before.sh" <<'EOF'
 set -euo pipefail
 
 cd /srv/src
+
+: "${ROOT_METHOD:=none}"
+: "${DEVICE_LIST:=}"
 
 if [[ "$ROOT_METHOD" == "none" ]]; then
   echo "[before.sh] ROOT_METHOD=none -> skipping root integration."
