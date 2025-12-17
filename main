@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 ### helpful scripts imported by other files
 source ./scripts/checkdeps
-
-### build config, 
-### check https://github.com/lineageos4microg/docker-lineage-cicd/wiki
-### if confused
 
 DEVICE_LIST=""
 BRANCH_NAME=""
@@ -15,3 +11,108 @@ SIGN_BUILDS=""
 CCACHE_SIZE=""
 PARALLEL_JOBS=""
 
+prompt_nonempty() {
+  local var_name="$1"
+  local prompt="$2"
+  local default="${3:-}"
+
+  # bash nameref (bash >= 4.3; Ubuntu 24.04 is fine)
+  declare -n ref="$var_name"
+
+  while [[ -z "${ref}" ]]; do
+    if [[ -n "$default" ]]; then
+      read -rp "$prompt [$default]: " ref
+      ref="${ref:-$default}"
+    else
+      read -rp "$prompt: " ref
+    fi
+  done
+}
+
+prompt_choice() {
+  local var_name="$1"
+  local prompt="$2"
+  shift 2
+  local options=("$@")
+
+  declare -n ref="$var_name"
+
+  echo
+  echo "$prompt"
+  local i=1
+  for opt in "${options[@]}"; do
+    echo "  $i) $opt"
+    ((i++))
+  done
+
+  while true; do
+    read -rp "Choose [1-${#options[@]}]: " choice
+    [[ "$choice" =~ ^[0-9]+$ ]] || continue
+    (( choice >= 1 && choice <= ${#options[@]} )) || continue
+    ref="${options[$((choice-1))]}"
+    break
+  done
+}
+
+save_variables() {
+  local out="$PROJECT_DIR/VARIABLES"
+  {
+    printf 'DEVICE_LIST=%q\n' "$DEVICE_LIST"
+    printf 'BRANCH_NAME=%q\n' "$BRANCH_NAME"
+    printf 'SIGNATURE_SPOOFING=%q\n' "$SIGNATURE_SPOOFING"
+    printf 'SIGN_BUILDS=%q\n' "$SIGN_BUILDS"
+    printf 'CCACHE_SIZE=%q\n' "$CCACHE_SIZE"
+    printf 'PARALLEL_JOBS=%q\n' "$PARALLEL_JOBS"
+  } > "$out"
+  echo "Saved config to $out"
+}
+
+main() {
+  check_deps
+
+  echo "=== Required configuration ==="
+  echo "Tip: DEVICE_LIST is your device codename (e.g. mondrian)."
+  echo "Tip: BRANCH_NAME is a Lineage branch (e.g. lineage-23.0)."
+  echo
+
+  prompt_nonempty DEVICE_LIST "DEVICE_LIST (device codename)"
+  prompt_nonempty BRANCH_NAME "BRANCH_NAME (Lineage branch)"
+
+  # Signature spoofing (mostly relevant for microG builds)
+  prompt_choice SIGNATURE_SPOOFING \
+    "SIGNATURE_SPOOFING (microG-related):" \
+    "no" "restricted" "yes"
+
+  # Signing
+  prompt_choice SIGN_BUILDS \
+    "SIGN_BUILDS:" \
+    "true" "false"
+
+  prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (e.g. 50G, 100G)" "$CCACHE_SIZE"
+  prompt_nonempty PARALLEL_JOBS "PARALLEL_JOBS (integer)" "$PARALLEL_JOBS"
+
+  echo
+  read -rp "Save these settings back into VARIABLES? [Y/n]: " save_ans
+  save_ans="${save_ans:-Y}"
+  if [[ "$save_ans" =~ ^[Yy]$ ]]; then
+    save_variables
+  fi
+
+  echo
+  prompt_choice BUILD_FLAVOR \
+    "What do you want to build?" \
+    "base" "microg"
+
+  prompt_choice ROOT_METHOD \
+    "Root option (applied during build via userscripts/before.sh):" \
+    "none" "kernelsu" "kernelsu-next" "sukisu-ultra"
+
+  export ROOT_METHOD
+
+  case "$BUILD_FLAVOR" in
+    base)   exec "$PROJECT_DIR/buildscripts/build-lineageos-base" ;;
+    microg) exec "$PROJECT_DIR/buildscripts/build-lineageos-microg" ;;
+  esac
+}
+
+main "$@"
