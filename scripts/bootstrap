@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve repo root (scripts/..)
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# ---- Load config (VARIABLES) if present ----
+if [[ -f "$PROJECT_DIR/VARIABLES" ]]; then
+  # shellcheck disable=SC1090
+  source "$PROJECT_DIR/VARIABLES"
+fi
+
+# ---- Defaults (do NOT overwrite existing values) ----
+: "${DEVICE_LIST:=}"
+: "${BRANCH_NAME:=}"
+: "${SIGNATURE_SPOOFING:=restricted}"
+: "${SIGN_BUILDS:=true}"
+: "${CCACHE_SIZE:=100G}"
+: "${PARALLEL_JOBS:=4}"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+require_var() {
+  local name="$1"
+  if [[ -z "${!name:-}" ]]; then
+    die "Required variable '$name' is not set"
+  fi
+}
+
+check_deps() {
+  command -v docker >/dev/null 2>&1 || die "docker not found"
+
+  # daemon reachable?
+  docker info >/dev/null 2>&1 || die "docker daemon not reachable (service running? permissions?)"
+}
+
+export_config() {
+  export DEVICE_LIST BRANCH_NAME SIGNATURE_SPOOFING SIGN_BUILDS CCACHE_SIZE PARALLEL_JOBS
+}
