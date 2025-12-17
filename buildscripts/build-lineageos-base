@@ -5,6 +5,14 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_DIR/main"
 check_deps
 
+: "${DEVICE_LIST:=}"
+: "${BRANCH_NAME:=}"
+: "${SIGNATURE_SPOOFING:=no}"
+: "${SIGN_BUILDS:=true}"
+: "${CCACHE_SIZE:=50G}"
+: "${PARALLEL_JOBS:=8}"
+: "${ROOT_METHOD:=none}"
+
 # Shared work dir (one src tree to save disk)
 WORKDIR="$PROJECT_DIR/work"
 SRC_DIR="$WORKDIR/src"
@@ -29,6 +37,10 @@ cat > "$USERSCRIPTS_DIR/before.sh" <<'EOF'
 set -euo pipefail
 
 cd /srv/src
+
+# These env vars are passed from docker run
+: "${ROOT_METHOD:=none}"
+: "${DEVICE_LIST:=}"
 
 if [[ "$ROOT_METHOD" == "none" ]]; then
   echo "[before.sh] ROOT_METHOD=none -> skipping root integration."
