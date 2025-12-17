@@ -15,3 +15,9 @@ CCACHE_SIZE="100G"
 
 # integer, e.g. 4, 8, 16
 PARALLEL_JOBS="2"
+
+# Outputs a .zip image (installable via recovery or adb sideload)
+ZIP_UP_IMAGES="true"
+
+### >>> change this to true if you want to create a local mirror of the LineageOS source (> 200 GB)
+LOCAL_MIRROR="true"
