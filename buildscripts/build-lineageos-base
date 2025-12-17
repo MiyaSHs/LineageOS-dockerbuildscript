@@ -3,7 +3,6 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_DIR/main"
-check_deps
 
 : "${DEVICE_LIST:=}"
 : "${BRANCH_NAME:=}"
