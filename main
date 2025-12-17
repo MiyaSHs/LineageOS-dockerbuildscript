@@ -3,16 +3,31 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-### helpful scripts imported by other files
-source ./scripts/checkdeps
-check_deps
+# Import dependency checks (absolute path so it works from anywhere)
+source "$PROJECT_DIR/scripts/checkdeps"
+
+# Load saved variables (if present)
+if [[ -f "$PROJECT_DIR/VARIABLES" ]]; then
+  # shellcheck disable=SC1090
+  source "$PROJECT_DIR/VARIABLES"
+fi
+
+# Safe defaults (do NOT overwrite if already set by VARIABLES)
+: "${DEVICE_LIST:=}"
+: "${BRANCH_NAME:=}"
+: "${SIGNATURE_SPOOFING:=restricted}"
+: "${SIGN_BUILDS:=true}"
+: "${CCACHE_SIZE:=100G}"
+: "${PARALLEL_JOBS:=4}"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
 
 prompt_nonempty() {
   local var_name="$1"
   local prompt="$2"
   local default="${3:-}"
 
-  # bash nameref (bash >= 4.3; Ubuntu 24.04 is fine)
+  # bash nameref
   declare -n ref="$var_name"
 
   while [[ -z "${ref}" ]]; do
@@ -50,6 +65,38 @@ prompt_choice() {
   done
 }
 
+validate_inputs() {
+  # DEVICE_LIST: allow comma-separated device list, but no spaces
+  if [[ "$DEVICE_LIST" =~ [[:space:]] ]]; then
+    die "DEVICE_LIST must not contain spaces. Use comma-separated, e.g. 'mondrian' or 'mondrian,otherdevice'"
+  fi
+
+  # BRANCH_NAME: should not be empty (already enforced), just sanity
+  if [[ "$BRANCH_NAME" =~ [[:space:]] ]]; then
+    die "BRANCH_NAME must not contain spaces (e.g. lineage-23.0)"
+  fi
+
+  case "$SIGNATURE_SPOOFING" in
+    no|restricted|yes) ;;
+    *) die "SIGNATURE_SPOOFING must be: no | restricted | yes" ;;
+  esac
+
+  case "$SIGN_BUILDS" in
+    true|false) ;;
+    *) die "SIGN_BUILDS must be: true | false" ;;
+  esac
+
+  # CCACHE_SIZE: accept formats like 50G, 100G, 200G (simple validation)
+  if ! [[ "$CCACHE_SIZE" =~ ^[0-9]+[KMGTP]$ ]]; then
+    die "CCACHE_SIZE must look like: 50G, 100G, 200G (got '$CCACHE_SIZE')"
+  fi
+
+  # PARALLEL_JOBS: integer >= 1
+  if ! [[ "$PARALLEL_JOBS" =~ ^[0-9]+$ ]] || (( PARALLEL_JOBS < 1 )); then
+    die "PARALLEL_JOBS must be an integer >= 1 (got '$PARALLEL_JOBS')"
+  fi
+}
+
 save_variables() {
   local out="$PROJECT_DIR/VARIABLES"
   {
@@ -64,28 +111,30 @@ save_variables() {
 }
 
 main() {
+  # Ensure docker exists + daemon reachable (provided by scripts/checkdeps)
   check_deps
 
   echo "=== Required configuration ==="
-  echo "Tip: DEVICE_LIST is your device codename (e.g. mondrian)."
-  echo "Tip: BRANCH_NAME is a Lineage branch (e.g. lineage-23.0)."
+  echo "DEVICE_LIST: your device codename (example: mondrian)"
+  echo "BRANCH_NAME: Lineage branch (example: lineage-23.0)"
   echo
 
-  prompt_nonempty DEVICE_LIST "DEVICE_LIST (device codename)"
-  prompt_nonempty BRANCH_NAME "BRANCH_NAME (Lineage branch)"
+  # Prompt, using existing values as defaults (from VARIABLES)
+  prompt_nonempty DEVICE_LIST "DEVICE_LIST (device codename)" "$DEVICE_LIST"
+  prompt_nonempty BRANCH_NAME "BRANCH_NAME (Lineage branch)" "$BRANCH_NAME"
 
-  # Signature spoofing (mostly relevant for microG builds)
   prompt_choice SIGNATURE_SPOOFING \
     "SIGNATURE_SPOOFING (microG-related):" \
     "no" "restricted" "yes"
 
-  # Signing
   prompt_choice SIGN_BUILDS \
     "SIGN_BUILDS:" \
     "true" "false"
 
   prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (e.g. 50G, 100G)" "$CCACHE_SIZE"
   prompt_nonempty PARALLEL_JOBS "PARALLEL_JOBS (integer)" "$PARALLEL_JOBS"
+
+  validate_inputs
 
   echo
   read -rp "Save these settings back into VARIABLES? [Y/n]: " save_ans
@@ -100,15 +149,20 @@ main() {
     "base" "microg"
 
   prompt_choice ROOT_METHOD \
-    "Root option (applied during build via userscripts/before.sh):" \
+    "Root option:" \
     "none" "kernelsu" "kernelsu-next" "sukisu-ultra"
 
-  export ROOT_METHOD
+  # Export so buildscripts receive them even via exec
+  export DEVICE_LIST BRANCH_NAME SIGNATURE_SPOOFING SIGN_BUILDS CCACHE_SIZE PARALLEL_JOBS ROOT_METHOD
 
   case "$BUILD_FLAVOR" in
     base)   exec "$PROJECT_DIR/buildscripts/build-lineageos-base" ;;
     microg) exec "$PROJECT_DIR/buildscripts/build-lineageos-microg" ;;
+    *) die "Unknown BUILD_FLAVOR: $BUILD_FLAVOR" ;;
   esac
 }
 
-main "$@"
+# Only run the menu if main is executed directly (safe to source elsewhere)
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
