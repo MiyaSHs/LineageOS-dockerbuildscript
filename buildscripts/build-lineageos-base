@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -e
+
+# Load variables
+source ../checkdeps
+
+ROOTDIR=./lineageos-base
+mkdir -p "$ROOTDIR/src" "$ROOTDIR/zips" "$ROOTDIR/logs" "$ROOTDIR/ccache"
+
+docker run \
+    -e "BRANCH_NAME=$BRANCH_NAME" \
+    -e "DEVICE_LIST=$DEVICE_LIST" \
+    -e "CCACHE_SIZE=$CCACHE_SIZE" \
+    -e "PARALLEL_JOBS=$PARALLEL_JOBS"
+    -e "WITH_GMS=false" \
+    -v "./lineageos-base/src:/srv/src" \
+    -v "./lineageos-base/zips:/srv/zips" \
+    -v "./lineageos-base/logs:/srv/logs" \
+    -v "./lineageos-base/cache:/srv/ccache" \
+    lineageos4microg/docker-lineage-cicd
