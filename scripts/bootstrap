@@ -13,10 +13,12 @@ fi
 # ---- Defaults (do NOT overwrite existing values) ----
 : "${DEVICE_LIST:=}"
 : "${BRANCH_NAME:=}"
-: "${SIGNATURE_SPOOFING:=restricted}"
-: "${SIGN_BUILDS:=true}"
-: "${CCACHE_SIZE:=100G}"
-: "${PARALLEL_JOBS:=4}"
+: "${SIGNATURE_SPOOFING:=restricted}"  # no | restricted | yes
+: "${SIGN_BUILDS:=true}"              # true | false
+: "${CCACHE_SIZE:=100G}"              # e.g. 50G, 100G
+: "${PARALLEL_JOBS:=4}"               # integer
+: "${ZIP_UP_IMAGES:=true}"            # true | false (docker-lineage-cicd will ignore if unsupported)
+: "${LOCAL_MIRROR:=false}"            # true | false (docker-lineage-cicd will ignore if unsupported)
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -29,11 +31,9 @@ require_var() {
 
 check_deps() {
   command -v docker >/dev/null 2>&1 || die "docker not found"
-
-  # daemon reachable?
   docker info >/dev/null 2>&1 || die "docker daemon not reachable (service running? permissions?)"
 }
 
 export_config() {
-  export DEVICE_LIST BRANCH_NAME SIGNATURE_SPOOFING SIGN_BUILDS CCACHE_SIZE PARALLEL_JOBS
+  export DEVICE_LIST BRANCH_NAME SIGNATURE_SPOOFING SIGN_BUILDS CCACHE_SIZE PARALLEL_JOBS ZIP_UP_IMAGES LOCAL_MIRROR
 }
