@@ -30,7 +30,7 @@ rm -f "$LOCAL_MANIFESTS_DIR"/*.xml || true
 # Generate userscripts/before.sh (root optional)
 cat > "$USERSCRIPTS_DIR/before.sh" <<'EOF'
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 # Find repo top
 TOP="$PWD"
