@@ -132,17 +132,20 @@ ensure_not_set() {
 
 case "$ROOT_METHOD" in
   kernelsu)
+    echo "[before.sh] Integrating KernelSU..."
     curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
     ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
     ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
     ;;
   kernelsu-next)
+    echo "[before.sh] Integrating KernelSU Next..."
     curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
     ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
     ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
     ;;
   sukisu-ultra)
-    curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+    echo "[before.sh] Integrating SukiSU Ultra..."
+    curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
     ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
     ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
     ensure_not_set CONFIG_KSU_MANUAL_HOOK "$DEFCONFIG_PATH"
@@ -152,6 +155,7 @@ case "$ROOT_METHOD" in
     exit 10
     ;;
 esac
+echo "[before.sh] Root integration done: $ROOT_METHOD"
 EOF
 
 docker pull lineageos4microg/docker-lineage-cicd:latest >/dev/null
