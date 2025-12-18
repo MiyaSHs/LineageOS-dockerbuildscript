@@ -9,12 +9,27 @@ source "$PROJECT_DIR/scripts/ui"
 save_variables() {
   local out="$PROJECT_DIR/VARIABLES"
   {
+    echo '# VARIABLES - saved config for LineageOS docker builds'
+    echo '# This file is sourced by main/build scripts.'
+    echo
     printf 'DEVICE_LIST=%q\n' "$DEVICE_LIST"
     printf 'BRANCH_NAME=%q\n' "$BRANCH_NAME"
+    echo
+    echo '# microG related: no | restricted | yes'
     printf 'SIGNATURE_SPOOFING=%q\n' "$SIGNATURE_SPOOFING"
+    echo
+    echo '# true | false'
     printf 'SIGN_BUILDS=%q\n' "$SIGN_BUILDS"
+    echo
+    echo '# e.g. 50G, 100G'
     printf 'CCACHE_SIZE=%q\n' "$CCACHE_SIZE"
+    echo
+    echo '# integer, e.g. 2, 4, 8, 16'
     printf 'PARALLEL_JOBS=%q\n' "$PARALLEL_JOBS"
+    echo
+    echo '# Optional (ignored if unsupported by container)'
+    printf 'ZIP_UP_IMAGES=%q\n' "$ZIP_UP_IMAGES"
+    printf 'LOCAL_MIRROR=%q\n' "$LOCAL_MIRROR"
   } > "$out"
   echo "Saved config to $out"
 }
@@ -22,15 +37,28 @@ save_variables() {
 main() {
   check_deps
 
+  # "First run" = no prior device/branch set
+  local first_run=0
+  if [[ -z "${DEVICE_LIST:-}" && -z "${BRANCH_NAME:-}" ]]; then
+    first_run=1
+  fi
+
   echo "=== Required configuration ==="
-  prompt_nonempty DEVICE_LIST "DEVICE_LIST (e.g. mondrian)" "$DEVICE_LIST"
-  prompt_nonempty BRANCH_NAME "BRANCH_NAME (e.g. lineage-23.0)" "$BRANCH_NAME"
+  if (( first_run )); then
+    echo "Tip: DEVICE_LIST is your device codename (e.g. mondrian)."
+    echo "Tip: BRANCH_NAME is a Lineage branch (e.g. lineage-23.0)."
+    echo
+  fi
 
-  prompt_choice SIGNATURE_SPOOFING "SIGNATURE_SPOOFING:" "no" "restricted" "yes"
-  prompt_choice SIGN_BUILDS "SIGN_BUILDS:" "true" "false"
+  # Ask every run, but show previous selection as default
+  prompt_nonempty DEVICE_LIST "DEVICE_LIST (previous: ${DEVICE_LIST:-none})" "$DEVICE_LIST"
+  prompt_nonempty BRANCH_NAME "BRANCH_NAME (previous: ${BRANCH_NAME:-none})" "$BRANCH_NAME"
 
-  prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (e.g. 50G, 100G)" "$CCACHE_SIZE"
-  prompt_nonempty PARALLEL_JOBS "PARALLEL_JOBS (integer)" "$PARALLEL_JOBS"
+  prompt_choice SIGNATURE_SPOOFING "SIGNATURE_SPOOFING (previous: $SIGNATURE_SPOOFING):" "no" "restricted" "yes"
+  prompt_choice SIGN_BUILDS "SIGN_BUILDS (previous: $SIGN_BUILDS):" "true" "false"
+
+  prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (previous: $CCACHE_SIZE)" "$CCACHE_SIZE"
+  prompt_nonempty PARALLEL_JOBS "PARALLEL_JOBS (previous: $PARALLEL_JOBS)" "$PARALLEL_JOBS"
 
   echo
   read -rp "Save to VARIABLES? [Y/n]: " ans
@@ -49,4 +77,7 @@ main() {
   esac
 }
 
-main "$@"
+# Safe if someone sources this file
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
