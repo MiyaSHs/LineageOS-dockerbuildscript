@@ -4,12 +4,9 @@ set -euo pipefail
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_DIR/scripts/bootstrap"
 
-: "${DEVICE_LIST:=}"
-: "${BRANCH_NAME:=}"
-: "${SIGNATURE_SPOOFING:=no}"
-: "${SIGN_BUILDS:=true}"
-: "${CCACHE_SIZE:=50G}"
-: "${PARALLEL_JOBS:=8}"
+check_deps
+require_var DEVICE_LIST
+require_var BRANCH_NAME
 : "${ROOT_METHOD:=none}"
 
 # Shared work dir (one src tree to save disk)
@@ -30,14 +27,15 @@ mkdir -p \
 # Base build: ensure no leftover local manifests from microG mode
 rm -f "$LOCAL_MANIFESTS_DIR"/*.xml || true
 
-# Generate userscripts/before.sh to apply root if requested
+# Generate userscripts/before.sh (root optional)
 cat > "$USERSCRIPTS_DIR/before.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Find repo top
 TOP="$PWD"
 if [[ ! -d "$TOP/.repo" ]]; then
-  TOP="$(find /srv/src -maxdepth 4 -type d -name .repo -print -quit 2>/dev/null | xargs -r dirname)"
+  TOP="$(find /srv/src -maxdepth 6 -type d -name .repo -print -quit 2>/dev/null | xargs -r dirname)"
 fi
 if [[ -z "$TOP" || ! -d "$TOP/.repo" ]]; then
   echo "[before.sh] ERROR: Could not locate repo top (.repo). PWD=$PWD"
@@ -47,28 +45,51 @@ if [[ -z "$TOP" || ! -d "$TOP/.repo" ]]; then
 fi
 cd "$TOP"
 
-# These env vars are passed from docker run
 : "${ROOT_METHOD:=none}"
 : "${DEVICE_LIST:=}"
+: "${PARALLEL_JOBS:=4}"
 
 if [[ "$ROOT_METHOD" == "none" ]]; then
   echo "[before.sh] ROOT_METHOD=none -> skipping root integration."
   exit 0
 fi
 
-# Root integration here is device-specific and assumes a single device codename.
+# Root integration assumes a single device codename
 if [[ "$DEVICE_LIST" == *","* || "$DEVICE_LIST" == *" "* ]]; then
   echo "[before.sh] Multiple devices in DEVICE_LIST='$DEVICE_LIST'. Root integration expects a single device build."
   exit 2
 fi
 
-DEFCONFIG_NAME="${DEVICE_LIST}_GKI.config"
+DEVICE="$DEVICE_LIST"
+DEFCONFIG_NAME="${DEVICE}_GKI.config"
 
-KCONF="$(find . -type f -path "*/arch/arm64/configs/vendor/${DEFCONFIG_NAME}" -print -quit 2>/dev/null || true)"
+locate_defconfig() {
+  find . -type f -path "*/arch/arm64/configs/vendor/${DEFCONFIG_NAME}" -print -quit 2>/dev/null || true
+}
+
+KCONF="$(locate_defconfig)"
+
+# If missing, try to trigger roomservice + sync now (device-independent)
+if [[ -z "$KCONF" ]]; then
+  echo "[before.sh] Defconfig not present yet. Running breakfast + repo sync to fetch device/kernel repos..."
+  if [[ -f build/envsetup.sh ]]; then
+    # shellcheck disable=SC1091
+    source build/envsetup.sh
+    breakfast "$DEVICE" || true
+  else
+    echo "[before.sh] WARNING: build/envsetup.sh not found; cannot run breakfast."
+  fi
+
+  # Pull newly-added projects (if any)
+  repo sync -c -j"$PARALLEL_JOBS" --force-sync || true
+
+  KCONF="$(locate_defconfig)"
+fi
+
 if [[ -z "$KCONF" ]]; then
   echo "[before.sh] ERROR: Could not find ${DEFCONFIG_NAME} under arch/arm64/configs/vendor/"
-  echo "[before.sh] Debug: showing any matching *GKI.config files:"
-  find . -type f -path "*/arch/arm64/configs/vendor/*_GKI.config" -maxdepth 10 2>/dev/null | head -n 50 || true
+  echo "[before.sh] Debug: any *_GKI.config under vendor configs?"
+  find . -type f -path "*/arch/arm64/configs/vendor/*_GKI.config" -maxdepth 12 2>/dev/null | head -n 100 || true
   exit 3
 fi
 
@@ -111,11 +132,8 @@ ensure_not_set() {
 case "$ROOT_METHOD" in
   kernelsu)
     echo "[before.sh] Integrating KernelSU..."
-    # Official KernelSU integration command (stable tag by default)
     curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
-    # Make sure it actually compiles in
     ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
-    # GKI hook typically relies on kprobes
     ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
     ;;
   kernelsu-next)
@@ -129,7 +147,6 @@ case "$ROOT_METHOD" in
     curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
     ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
     ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
-    # SukiSU docs: kprobe hook expects manual hook NOT set
     ensure_not_set CONFIG_KSU_MANUAL_HOOK "$DEFCONFIG_PATH"
     ;;
   *)
@@ -141,9 +158,7 @@ esac
 echo "[before.sh] Root integration done: $ROOT_METHOD"
 EOF
 
-chmod +x "$USERSCRIPTS_DIR/before.sh"
-
-# Always pull latest image unless you want pinned builds
+# Pull latest image
 docker pull lineageos4microg/docker-lineage-cicd:latest >/dev/null
 
 docker run --rm -it \
@@ -154,6 +169,8 @@ docker run --rm -it \
   -e "SIGN_BUILDS=$SIGN_BUILDS" \
   -e "CCACHE_SIZE=$CCACHE_SIZE" \
   -e "PARALLEL_JOBS=$PARALLEL_JOBS" \
+  -e "ZIP_UP_IMAGES=$ZIP_UP_IMAGES" \
+  -e "LOCAL_MIRROR=$LOCAL_MIRROR" \
   -e "ROOT_METHOD=$ROOT_METHOD" \
   -v "$SRC_DIR:/srv/src" \
   -v "$ZIPS_DIR:/srv/zips" \
