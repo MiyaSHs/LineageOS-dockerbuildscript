@@ -4,12 +4,9 @@ set -euo pipefail
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_DIR/scripts/bootstrap"
 
-: "${DEVICE_LIST:=}"
-: "${BRANCH_NAME:=}"
-: "${SIGNATURE_SPOOFING:=restricted}"
-: "${SIGN_BUILDS:=true}"
-: "${CCACHE_SIZE:=50G}"
-: "${PARALLEL_JOBS:=8}"
+check_deps
+require_var DEVICE_LIST
+require_var BRANCH_NAME
 : "${ROOT_METHOD:=none}"
 
 WORKDIR="$PROJECT_DIR/work"
@@ -26,9 +23,7 @@ mkdir -p \
   "$LOCAL_MANIFESTS_DIR" "$USERSCRIPTS_DIR" \
   "$ZIPS_DIR" "$LOGS_DIR"
 
-# microG build requires vendor/partner_gms in local manifests
-# The wiki example uses:
-# path="vendor/partner_gms" name="lineageos4microg/android_vendor_partner_gms" remote="github" revision="master"
+# microG build requires vendor/partner_gms in local manifests (doc example)
 cat > "$LOCAL_MANIFESTS_DIR/00_microg.xml" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest>
@@ -40,16 +35,14 @@ cat > "$LOCAL_MANIFESTS_DIR/00_microg.xml" <<'EOF'
 </manifest>
 EOF
 
-# Reuse the exact same before.sh generator used in base script (root integration)
-# (We simply call the base script’s generator logic by reusing its file if present,
-# but to keep it self-contained we regenerate it here.)
+# Generate userscripts/before.sh (root optional; same as base)
 cat > "$USERSCRIPTS_DIR/before.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
 TOP="$PWD"
 if [[ ! -d "$TOP/.repo" ]]; then
-  TOP="$(find /srv/src -maxdepth 4 -type d -name .repo -print -quit 2>/dev/null | xargs -r dirname)"
+  TOP="$(find /srv/src -maxdepth 6 -type d -name .repo -print -quit 2>/dev/null | xargs -r dirname)"
 fi
 if [[ -z "$TOP" || ! -d "$TOP/.repo" ]]; then
   echo "[before.sh] ERROR: Could not locate repo top (.repo). PWD=$PWD"
@@ -59,28 +52,46 @@ if [[ -z "$TOP" || ! -d "$TOP/.repo" ]]; then
 fi
 cd "$TOP"
 
-# These env vars are passed from docker run
 : "${ROOT_METHOD:=none}"
 : "${DEVICE_LIST:=}"
+: "${PARALLEL_JOBS:=4}"
 
 if [[ "$ROOT_METHOD" == "none" ]]; then
   echo "[before.sh] ROOT_METHOD=none -> skipping root integration."
   exit 0
 fi
 
-# Root integration here is device-specific and assumes a single device codename.
 if [[ "$DEVICE_LIST" == *","* || "$DEVICE_LIST" == *" "* ]]; then
   echo "[before.sh] Multiple devices in DEVICE_LIST='$DEVICE_LIST'. Root integration expects a single device build."
   exit 2
 fi
 
-DEFCONFIG_NAME="${DEVICE_LIST}_GKI.config"
+DEVICE="$DEVICE_LIST"
+DEFCONFIG_NAME="${DEVICE}_GKI.config"
 
-KCONF="$(find . -type f -path "*/arch/arm64/configs/vendor/${DEFCONFIG_NAME}" -print -quit 2>/dev/null || true)"
+locate_defconfig() {
+  find . -type f -path "*/arch/arm64/configs/vendor/${DEFCONFIG_NAME}" -print -quit 2>/dev/null || true
+}
+
+KCONF="$(locate_defconfig)"
+
+if [[ -z "$KCONF" ]]; then
+  echo "[before.sh] Defconfig not present yet. Running breakfast + repo sync to fetch device/kernel repos..."
+  if [[ -f build/envsetup.sh ]]; then
+    # shellcheck disable=SC1091
+    source build/envsetup.sh
+    breakfast "$DEVICE" || true
+  else
+    echo "[before.sh] WARNING: build/envsetup.sh not found; cannot run breakfast."
+  fi
+
+  repo sync -c -j"$PARALLEL_JOBS" --force-sync || true
+  KCONF="$(locate_defconfig)"
+fi
+
 if [[ -z "$KCONF" ]]; then
   echo "[before.sh] ERROR: Could not find ${DEFCONFIG_NAME} under arch/arm64/configs/vendor/"
-  echo "[before.sh] Debug: showing any matching *GKI.config files:"
-  find . -type f -path "*/arch/arm64/configs/vendor/*_GKI.config" -maxdepth 10 2>/dev/null | head -n 50 || true
+  find . -type f -path "*/arch/arm64/configs/vendor/*_GKI.config" -maxdepth 12 2>/dev/null | head -n 100 || true
   exit 3
 fi
 
@@ -93,7 +104,6 @@ echo "[before.sh] Defconfig:  $DEFCONFIG_PATH"
 
 cd "$KERNEL_DIR"
 
-# Keep builds reproducible: always start clean in the kernel repo
 git reset --hard
 git clean -fdx
 
@@ -144,8 +154,6 @@ case "$ROOT_METHOD" in
 esac
 EOF
 
-chmod +x "$USERSCRIPTS_DIR/before.sh"
-
 docker pull lineageos4microg/docker-lineage-cicd:latest >/dev/null
 
 docker run --rm -it \
@@ -156,6 +164,8 @@ docker run --rm -it \
   -e "SIGN_BUILDS=$SIGN_BUILDS" \
   -e "CCACHE_SIZE=$CCACHE_SIZE" \
   -e "PARALLEL_JOBS=$PARALLEL_JOBS" \
+  -e "ZIP_UP_IMAGES=$ZIP_UP_IMAGES" \
+  -e "LOCAL_MIRROR=$LOCAL_MIRROR" \
   -e "ROOT_METHOD=$ROOT_METHOD" \
   -v "$SRC_DIR:/srv/src" \
   -v "$ZIPS_DIR:/srv/zips" \
