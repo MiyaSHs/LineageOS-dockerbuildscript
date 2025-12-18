@@ -38,7 +38,7 @@ EOF
 # Generate userscripts/before.sh (root optional; same as base)
 cat > "$USERSCRIPTS_DIR/before.sh" <<'EOF'
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 TOP="$PWD"
 if [[ ! -d "$TOP/.repo" ]]; then
