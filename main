@@ -37,33 +37,17 @@ save_variables() {
 main() {
   check_deps
 
-  # "First run" = no prior device/branch set
-  local first_run=0
-  if [[ -z "${DEVICE_LIST:-}" && -z "${BRANCH_NAME:-}" ]]; then
-    first_run=1
-  fi
-
-  echo "=== Required configuration ==="
-  if (( first_run )); then
-    echo "Tip: DEVICE_LIST is your device codename (e.g. mondrian)."
-    echo "Tip: BRANCH_NAME is a Lineage branch (e.g. lineage-23.0)."
-    echo
-  fi
-
   # Ask every run, but show previous selection as default
-  prompt_nonempty DEVICE_LIST "DEVICE_LIST (previous: ${DEVICE_LIST:-none})" "$DEVICE_LIST"
-  prompt_nonempty BRANCH_NAME "BRANCH_NAME (previous: ${BRANCH_NAME:-none})" "$BRANCH_NAME"
+  prompt_nonempty DEVICE_LIST "DEVICE_LIST ($DEVICE_LIST)" "$DEVICE_LIST"
+  prompt_nonempty BRANCH_NAME "BRANCH_NAME ($BRANCH_NAME)" "$BRANCH_NAME"
 
-  prompt_choice SIGNATURE_SPOOFING "SIGNATURE_SPOOFING (previous: $SIGNATURE_SPOOFING):" "no" "restricted" "yes"
-  prompt_choice SIGN_BUILDS "SIGN_BUILDS (previous: $SIGN_BUILDS):" "true" "false"
+  prompt_choice SIGNATURE_SPOOFING "SIGNATURE_SPOOFING ($SIGNATURE_SPOOFING):" "no" "restricted" "yes"
+  prompt_choice SIGN_BUILDS "SIGN_BUILDS ($SIGN_BUILDS):" "true" "false"
 
-  prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (previous: $CCACHE_SIZE)" "$CCACHE_SIZE"
-  prompt_nonempty PARALLEL_JOBS "PARALLEL_JOBS (previous: $PARALLEL_JOBS)" "$PARALLEL_JOBS"
+  prompt_nonempty CCACHE_SIZE "CCACHE_SIZE ($CCACHE_SIZE)" "$CCACHE_SIZE"
+  prompt_nonempty PARALLEL_JOBS "PARALLEL_JOBS ($PARALLEL_JOBS)" "$PARALLEL_JOBS"
 
-  echo
-  read -rp "Save to VARIABLES? [Y/n]: " ans
-  ans="${ans:-Y}"
-  [[ "$ans" =~ ^[Yy]$ ]] && save_variables
+  save_variables
 
   prompt_choice BUILD_FLAVOR "Build flavor:" "base" "microg"
   prompt_choice ROOT_METHOD "Root method:" "none" "kernelsu" "kernelsu-next" "sukisu-ultra"
