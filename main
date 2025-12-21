@@ -38,8 +38,8 @@ main() {
   check_deps
 
   # Ask every run, but show previous selection as default
-  prompt_choice DEVICE_LIST "DEVICE_LIST ($DEVICE_LIST)" "$DEVICE_LIST"
-  prompt_choice BRANCH_NAME "BRANCH_NAME ($BRANCH_NAME)" "$BRANCH_NAME"
+  prompt_nonempty DEVICE_LIST "DEVICE_LIST ($DEVICE_LIST)" "$DEVICE_LIST"
+  prompt_nonempty BRANCH_NAME "BRANCH_NAME ($BRANCH_NAME)" "$BRANCH_NAME"
 
   prompt_choice SIGNATURE_SPOOFING "SIGNATURE_SPOOFING ($SIGNATURE_SPOOFING):" "no" "restricted" "yes"
   prompt_choice SIGN_BUILDS "SIGN_BUILDS ($SIGN_BUILDS):" "true" "false"
