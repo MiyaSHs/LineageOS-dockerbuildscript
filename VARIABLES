@@ -20,4 +20,4 @@ PARALLEL_JOBS="2"
 ZIP_UP_IMAGES="true"
 
 ### >>> change this to true if you want to create a local mirror of the LineageOS source (> 200 GB)
-LOCAL_MIRROR="true"
+LOCAL_MIRROR="false"
