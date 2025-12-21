@@ -44,7 +44,7 @@ main() {
   prompt_choice SIGNATURE_SPOOFING "SIGNATURE_SPOOFING ($SIGNATURE_SPOOFING):" "no" "restricted" "yes"
   prompt_choice SIGN_BUILDS "SIGN_BUILDS ($SIGN_BUILDS):" "true" "false"
 
-  prompt_choice CCACHE_SIZE "CCACHE_SIZE ($CCACHE_SIZE)" "100G" "150G" 200G"
+  prompt_choice CCACHE_SIZE "CCACHE_SIZE ($CCACHE_SIZE)" "100G" "150G" "200G"
   prompt_choice PARALLEL_JOBS "PARALLEL_JOBS ($PARALLEL_JOBS)" "1" "2" "4" "6" "8" "16" "32"
 
   save_variables
