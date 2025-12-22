@@ -158,6 +158,10 @@ esac
 echo "[before.sh] Root integration done: $ROOT_METHOD"
 EOF
 
+#ensure before.sh is executable
+chmod 0755 "$USERSCRIPTS_DIR/before.sh"
+ls -l "$USERSCRIPTS_DIR/before.sh"
+
 docker pull lineageos4microg/docker-lineage-cicd:latest >/dev/null
 
 docker run --rm -it \
