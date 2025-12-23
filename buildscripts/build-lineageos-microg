@@ -4,10 +4,10 @@ set -eo pipefail
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 source "$PROJECT_DIR/scripts/bootstrap"
-source "$PROJECT_DIR/scripts/modules/workdir.sh"
-source "$PROJECT_DIR/scripts/modules/manifests.sh"
-source "$PROJECT_DIR/scripts/modules/userscripts.sh"
-source "$PROJECT_DIR/scripts/modules/docker.sh"
+source "$PROJECT_DIR/scripts/modules/workdir"
+source "$PROJECT_DIR/scripts/modules/manifests"
+source "$PROJECT_DIR/scripts/modules/userscripts"
+source "$PROJECT_DIR/scripts/modules/docker"
 
 check_deps
 require_var DEVICE_LIST
