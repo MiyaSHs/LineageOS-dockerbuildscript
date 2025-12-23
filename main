@@ -75,7 +75,7 @@ main() {
   prompt_choice SIGN_BUILDS "SIGN_BUILDS:" "true" "false"
   run_keygen_if_needed
 
-  prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (e.g. 100G)" "$CCACHE_SIZE"
+  prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (e.g. 100G, higher means faster following builds)" "$CCACHE_SIZE"
   prompt_int PARALLEL_JOBS "PARALLEL_JOBS" "$PARALLEL_JOBS"
 
   prompt_choice BUILD_FLAVOR "Build flavor:" "base" "microg"
