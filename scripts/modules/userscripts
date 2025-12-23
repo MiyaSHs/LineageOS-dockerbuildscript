@@ -2,7 +2,6 @@
 set -eo pipefail
 
 userscripts_assert_exec_mount() {
-  # If the directory is on a noexec mount, docker will fail with "Permission denied"
   if command -v findmnt >/dev/null 2>&1; then
     local opts
     opts="$(findmnt -no OPTIONS -T "$USERSCRIPTS_DIR" 2>/dev/null || true)"
@@ -39,6 +38,34 @@ if [[ -d /srv/custom_apps/vendor/custom_apps ]]; then
   rm -rf "$TOP/vendor/custom_apps"
   mkdir -p "$TOP/vendor"
   cp -a /srv/custom_apps/vendor/custom_apps "$TOP/vendor/"
+fi
+
+: "${REPLACE_STOCK_FDROID:=false}"
+
+# Best-effort attempt to remove FDroid / PrivExt that came from vendor/partner_gms
+if [[ "$REPLACE_STOCK_FDROID" == "true" && -d "$TOP/vendor/partner_gms" ]]; then
+  echo "[before.sh] REPLACE_STOCK_FDROID=true -> attempting to remove stock FDroid + PrivExt from vendor/partner_gms (best-effort)."
+
+  remove_from_partner_gms() {
+    local token="$1"
+    # Only touch product/package list files (not module definitions)
+    local files
+    files="$(grep -RIl --include='*.mk' --include='*.xml' "$token" "$TOP/vendor/partner_gms" 2>/dev/null || true)"
+    [[ -n "$files" ]] || return 0
+    while IFS= read -r f; do
+      # Remove token occurrences; keep file syntactically valid
+      sed -i \
+        -e "s/[[:space:]]\\b${token}\\b[[:space:]]*/ /g" \
+        -e "s/[[:space:]]\\{2,\\}/ /g" \
+        "$f" || true
+    done <<<"$files"
+  }
+
+  # Common module names seen in partner_gms trees
+  remove_from_partner_gms "FDroid"
+  remove_from_partner_gms "FDroidPrivilegedExtension"
+  remove_from_partner_gms "F-Droid"
+  remove_from_partner_gms "F-DroidPrivilegedExtension"
 fi
 
 : "${ROOT_METHOD:=none}"
@@ -96,7 +123,6 @@ echo "[before.sh] Defconfig:  $DEFCONFIG_PATH"
 
 cd "$KERNEL_DIR"
 
-# Keep builds reproducible: always start clean in the kernel repo
 git reset --hard
 git clean -fdx
 
