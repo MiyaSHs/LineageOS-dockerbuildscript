@@ -1,1 +1,297 @@
+#!/usr/bin/env bash
+set -eo pipefail
 
+# Custom apps spec file format (one per line):
+#   gh:OWNER/REPO|name=ModuleName|asset=REGEX|privileged=true|cert=presigned
+#   fdroid:package.name|name=ModuleName|privileged=false|cert=presigned
+#   url:https://example.com/app.apk|name=ModuleName|privileged=false|cert=presigned
+#   package.name   (treated like fdroid:package.name)
+#
+# Defaults:
+# - name defaults to repo name / package tail
+# - privileged defaults false (system/app)
+# - cert defaults presigned (keeps developer signature, so it can update normally)
+
+custom_apps_prompt() {
+  : "${CUSTOM_APPS_FILE:=$PROJECT_DIR/CUSTOM_APPS}"
+  mkdir -p "$(dirname "$CUSTOM_APPS_FILE")"
+  touch "$CUSTOM_APPS_FILE"
+
+  echo
+  echo "=== Custom system apps ==="
+  if grep -qE '^\s*[^#[:space:]]' "$CUSTOM_APPS_FILE"; then
+    echo "Current list (from $CUSTOM_APPS_FILE):"
+    nl -ba "$CUSTOM_APPS_FILE" | sed 's/^/  /'
+  else
+    echo "Current list: (none)"
+  fi
+  echo
+  echo "Options:"
+  echo "  Enter  -> keep current list"
+  echo "  none   -> clear list"
+  echo "  add    -> append one new entry interactively"
+  echo "  edit   -> open in \$EDITOR (fallback: nano/vi)"
+  echo
+
+  read -rp "Custom apps action [Enter/none/add/edit]: " act
+  act="${act:-}"
+
+  case "$act" in
+    "")
+      return 0
+      ;;
+    none)
+      : > "$CUSTOM_APPS_FILE"
+      echo "Cleared $CUSTOM_APPS_FILE"
+      return 0
+      ;;
+    edit)
+      local ed="${EDITOR:-}"
+      if [[ -z "$ed" ]]; then
+        if command -v nano >/dev/null 2>&1; then ed="nano"
+        elif command -v vi >/dev/null 2>&1; then ed="vi"
+        else
+          echo "No editor found. Please edit $CUSTOM_APPS_FILE manually."
+          return 0
+        fi
+      fi
+      "$ed" "$CUSTOM_APPS_FILE"
+      return 0
+      ;;
+    add)
+      echo
+      echo "Paste one spec (examples):"
+      echo "  gh:NeoApplications/Neo-Store|name=NeoStore|asset='.*\\.apk$'"
+      echo "  fdroid:dev.imranr.obtainium|name=Obtainium"
+      echo "  url:https://example.com/app.apk|name=MyApp|privileged=true"
+      echo "  org.torproject.android (treated as fdroid)"
+      echo
+      read -rp "Spec: " spec
+      spec="$(echo "$spec" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [[ -n "$spec" ]] || { echo "Empty, cancelled."; return 0; }
+      echo "$spec" >> "$CUSTOM_APPS_FILE"
+      echo "Added."
+      return 0
+      ;;
+    *)
+      echo "Unknown action: $act"
+      return 1
+      ;;
+  esac
+}
+
+custom_apps_prepare() {
+  : "${CUSTOM_APPS_FILE:=$PROJECT_DIR/CUSTOM_APPS}"
+  mkdir -p "$(dirname "$CUSTOM_APPS_FILE")"
+  touch "$CUSTOM_APPS_FILE"
+
+  # If no apps, clear exports and payload
+  if ! grep -qE '^\s*[^#[:space:]]' "$CUSTOM_APPS_FILE"; then
+    CUSTOM_PACKAGES=""
+    export CUSTOM_PACKAGES
+    CUSTOM_APPS_PAYLOAD_DIR=""
+    export CUSTOM_APPS_PAYLOAD_DIR
+    return 0
+  fi
+
+  : "${WORKDIR:=$PROJECT_DIR/work}"
+  CUSTOM_APPS_DIR="$WORKDIR/custom_apps"
+  CUSTOM_APPS_PAYLOAD_DIR="$CUSTOM_APPS_DIR/payload"
+  rm -rf "$CUSTOM_APPS_PAYLOAD_DIR"
+  mkdir -p "$CUSTOM_APPS_PAYLOAD_DIR/vendor/custom_apps" "$CUSTOM_APPS_DIR/cache"
+
+  # Use python (no extra deps) to:
+  # - parse specs
+  # - download latest APKs from GitHub releases / F-Droid package pages / direct URLs
+  # - generate vendor/custom_apps/Android.bp
+  python3 - <<'PY'
+import os, re, json, urllib.request, urllib.parse, shutil, sys
+from pathlib import Path
+
+apps_file = Path(os.environ["CUSTOM_APPS_FILE"])
+payload = Path(os.environ["CUSTOM_APPS_PAYLOAD_DIR"])
+cache = (payload.parent / "cache")
+cache.mkdir(parents=True, exist_ok=True)
+
+android_bp = payload / "vendor" / "custom_apps" / "Android.bp"
+apps_dir   = payload / "vendor" / "custom_apps" / "apps"
+apps_dir.mkdir(parents=True, exist_ok=True)
+
+def http_get(url, headers=None):
+    req = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read()
+
+def dl(url, out):
+    out.parent.mkdir(parents=True, exist_ok=True)
+    data = http_get(url, headers={"User-Agent":"custom-apps-fetcher"})
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(out)
+
+def sanitize_module(name):
+    # Soong module names can include many chars, but keep it simple
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "CustomApp"
+
+def parse_kv(parts):
+    kv = {}
+    for p in parts:
+        p = p.strip()
+        if not p: 
+            continue
+        if "=" in p:
+            k,v = p.split("=",1)
+            kv[k.strip().lower()] = v.strip().strip('"').strip("'")
+    return kv
+
+def pick_github_apk(owner_repo, asset_regex=None):
+    api = f"https://api.github.com/repos/{owner_repo}/releases/latest"
+    j = json.loads(http_get(api, headers={"User-Agent":"custom-apps-fetcher"}).decode("utf-8"))
+    assets = j.get("assets", [])
+    apk_assets = []
+    for a in assets:
+        name = a.get("name","")
+        url  = a.get("browser_download_url","")
+        if name.lower().endswith(".apk") and url:
+            apk_assets.append((name, url))
+    if not apk_assets:
+        raise RuntimeError(f"No .apk assets in latest release for {owner_repo}")
+
+    if asset_regex:
+        rx = re.compile(asset_regex)
+        for name,url in apk_assets:
+            if rx.search(name):
+                return name, url
+
+    # Heuristics: prefer universal if present
+    for key in ["universal", "all", "release"]:
+        for name,url in apk_assets:
+            if key in name.lower():
+                return name, url
+
+    return apk_assets[0]
+
+def pick_fdroid_apk(package_name):
+    # Parse the F-Droid package page to find a direct /repo/*.apk link
+    page = f"https://f-droid.org/packages/{package_name}/"
+    html = http_get(page, headers={"User-Agent":"custom-apps-fetcher"}).decode("utf-8", errors="ignore")
+
+    # Match first repo APK link
+    m = re.search(r'href="(https://f-droid\.org/repo/[^"]+\.apk)"', html)
+    if not m:
+        m = re.search(r'href="(/repo/[^"]+\.apk)"', html)
+        if m:
+            return "f-droid.apk", "https://f-droid.org" + m.group(1)
+        raise RuntimeError(f"Could not find APK link on F-Droid page for {package_name}")
+    return "f-droid.apk", m.group(1)
+
+modules = []
+
+lines = apps_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+for raw in lines:
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+
+    # spec|k=v|k=v...
+    parts = [p.strip() for p in line.split("|")]
+    spec = parts[0]
+    kv = parse_kv(parts[1:])
+
+    privileged = kv.get("privileged","false").lower() in ("1","true","yes","y")
+    cert = kv.get("cert","presigned").lower()  # presigned | platform
+
+    # Determine module name default
+    default_name = None
+    if spec.startswith("gh:"):
+        default_name = spec.split(":",1)[1].split("/",1)[-1]
+    elif spec.startswith("fdroid:"):
+        default_name = spec.split(":",1)[1].split(".")[-1]
+    elif spec.startswith("url:"):
+        default_name = Path(urllib.parse.urlparse(spec.split(":",1)[1]).path).stem
+    else:
+        # treat as package
+        default_name = spec.split(".")[-1]
+
+    modname = sanitize_module(kv.get("name") or default_name)
+
+    # Download
+    if spec.startswith("gh:"):
+        owner_repo = spec.split(":",1)[1]
+        asset_rx = kv.get("asset")
+        asset_name, url = pick_github_apk(owner_repo, asset_regex=asset_rx)
+        out_apk = apps_dir / modname / asset_name
+        dl(url, out_apk)
+    elif spec.startswith("url:"):
+        url = spec.split(":",1)[1]
+        out_apk = apps_dir / modname / (Path(urllib.parse.urlparse(url).path).name or f"{modname}.apk")
+        dl(url, out_apk)
+    else:
+        pkg = spec.split(":",1)[1] if spec.startswith("fdroid:") else spec
+        asset_name, url = pick_fdroid_apk(pkg)
+        out_apk = apps_dir / modname / f"{pkg}.apk"
+        dl(url, out_apk)
+
+    # Write module snippet
+    rel_apk = out_apk.relative_to(payload / "vendor" / "custom_apps")
+
+    if cert == "platform":
+        # Re-sign at build time with platform key (NOT updatable via upstream stores)
+        cert_line = '    certificate: "platform",\n'
+        presigned_line = ""
+    else:
+        # Keep original developer signature (updatable if store provides same signature)
+        cert_line = ""
+        presigned_line = "    presigned: true,\n"
+
+    snippet = (
+f'android_app_import {{\n'
+f'    name: "{modname}",\n'
+f'    apk: "{rel_apk.as_posix()}",\n'
+f'{presigned_line}'
+f'{cert_line}'
+f'    privileged: {"true" if privileged else "false"},\n'
+f'    dex_preopt: {{ enabled: false }},\n'
+f'}}\n'
+    )
+
+    modules.append((modname, snippet))
+
+# Emit Android.bp
+with android_bp.open("w", encoding="utf-8") as f:
+    f.write('// Auto-generated. Do not edit by hand.\n\n')
+    for _, snip in modules:
+        f.write(snip + "\n")
+
+# Output module list for bash
+print(" ".join([m for m,_ in modules]))
+PY
+  local mods
+  mods="$(tail -n 1 <<<"$(python3 -c 'print("")' 2>/dev/null || true)")" || true
+
+  # The python prints module list to stdout; capture it:
+  CUSTOM_PACKAGES="$(python3 - <<'PY'
+import os, subprocess, sys
+# We re-run the generator in a tiny no-op way? No.
+# Instead: read the Android.bp and extract module names:
+from pathlib import Path
+bp = Path(os.environ["CUSTOM_APPS_PAYLOAD_DIR"]) / "vendor/custom_apps/Android.bp"
+txt = bp.read_text(encoding="utf-8", errors="ignore")
+names = []
+for line in txt.splitlines():
+    line = line.strip()
+    if line.startswith('name: "'):
+        names.append(line.split('"')[1])
+print(" ".join(names))
+PY
+)"
+
+  export CUSTOM_PACKAGES
+  export CUSTOM_APPS_PAYLOAD_DIR
+
+  echo
+  echo "Custom apps prepared. Modules:"
+  echo "  $CUSTOM_PACKAGES"
+  echo "Payload dir:"
+  echo "  $CUSTOM_APPS_PAYLOAD_DIR"
+}
