@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+workdir_init() {
+  local flavor="$1"  # base | microg
+  [[ -n "${PROJECT_DIR:-}" ]] || { echo "PROJECT_DIR not set (source scripts/bootstrap first)"; exit 2; }
+
+  WORKDIR="${WORKDIR:-$PROJECT_DIR/work}"
+
+  SRC_DIR="$WORKDIR/src"
+  CCACHE_DIR="$WORKDIR/ccache"
+  KEYS_DIR="$WORKDIR/keys"
+  LOCAL_MANIFESTS_DIR="$WORKDIR/local_manifests"
+  USERSCRIPTS_DIR="$WORKDIR/userscripts"
+
+  ZIPS_DIR="$WORKDIR/out/$flavor/zips"
+  LOGS_DIR="$WORKDIR/out/$flavor/logs"
+
+  mkdir -p \
+    "$SRC_DIR" "$CCACHE_DIR" "$KEYS_DIR" \
+    "$LOCAL_MANIFESTS_DIR" "$USERSCRIPTS_DIR" \
+    "$ZIPS_DIR" "$LOGS_DIR"
+}
