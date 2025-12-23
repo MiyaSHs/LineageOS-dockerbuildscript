@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+local_manifests_clear() {
+  rm -f "$LOCAL_MANIFESTS_DIR"/*.xml 2>/dev/null || true
+}
+
+local_manifests_write_microg() {
+  cat > "$LOCAL_MANIFESTS_DIR/00_microg.xml" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <project
+      path="vendor/partner_gms"
+      name="lineageos4microg/android_vendor_partner_gms"
+      remote="github"
+      revision="master" />
+</manifest>
+EOF
+}
