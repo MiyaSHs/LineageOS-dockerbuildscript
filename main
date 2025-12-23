@@ -6,6 +6,19 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$PROJECT_DIR/scripts/bootstrap"
 source "$PROJECT_DIR/scripts/ui"
 
+run_keygen_if_needed() {
+  # Only run if SIGN_BUILDS=true
+  if [[ "${SIGN_BUILDS}" == "true" ]]; then
+    echo
+    echo "Signing is enabled."
+    read -rp "Generate / verify signing keys now? [Y/n]: " ans
+    ans="${ans:-Y}"
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      bash "$PROJECT_DIR/scripts/genkeys"
+    fi
+  fi
+}
+
 save_variables() {
   local out="$PROJECT_DIR/VARIABLES"
   {
@@ -50,6 +63,7 @@ main() {
 
   prompt_choice SIGNATURE_SPOOFING "SIGNATURE_SPOOFING:" "no" "restricted" "yes"
   prompt_choice SIGN_BUILDS "SIGN_BUILDS:" "true" "false"
+  run_keygen_if_needed
 
   prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (e.g. 100G)" "$CCACHE_SIZE"
   prompt_int PARALLEL_JOBS "PARALLEL_JOBS" "$PARALLEL_JOBS"
