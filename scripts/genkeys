@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Repo root = scripts/..
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Prefer your current layout: work/keys (used by your docker mounts)
+KEYS_DIR_DEFAULT="$PROJECT_DIR/work/keys"
+# Optional fallback if someone uses ./keys
+KEYS_DIR_FALLBACK="$PROJECT_DIR/keys"
+
+if [[ -d "$KEYS_DIR_DEFAULT" || -d "$PROJECT_DIR/work" ]]; then
+  KEYS_DIR="$KEYS_DIR_DEFAULT"
+else
+  KEYS_DIR="$KEYS_DIR_FALLBACK"
+fi
+
+need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing dependency: $1"; exit 2; }; }
+need_cmd openssl
+need_cmd find
+need_cmd date
+
+mkdir -p "$KEYS_DIR"
+chmod 0700 "$KEYS_DIR" || true
+
+KEY_NAMES=(
+  releasekey
+  platform
+  shared
+  media
+  networkstack
+  bluetooth
+  nfc
+  sdk_sandbox
+  testcert
+  verity
+)
+
+has_existing_keys() {
+  find "$KEYS_DIR" -maxdepth 1 -type f \( -name '*.pk8' -o -name '*.x509.pem' \) -print -quit | grep -q .
+}
+
+prompt_password() {
+  local p1 p2
+  while true; do
+    read -rsp "Enter signing key password: " p1; echo
+    read -rsp "Confirm signing key password: " p2; echo
+    [[ -n "$p1" ]] || { echo "Password cannot be empty."; continue; }
+    [[ "$p1" == "$p2" ]] || { echo "Passwords do not match. Try again."; continue; }
+    SIGN_PASS="$p1"
+    return 0
+  done
+}
+
+prompt_rsa_bits() {
+  local choice
+  echo
+  echo "RSA key size (2048 is faster; 4096 is slower but stronger):"
+  echo "  1) 2048 (recommended)"
+  echo "  2) 4096"
+  read -rp "Choose [1-2] (Enter = 1): " choice
+  choice="${choice:-1}"
+  case "$choice" in
+    1) RSA_BITS=2048 ;;
+    2) RSA_BITS=4096 ;;
+    *) echo "Invalid choice"; exit 2 ;;
+  esac
+}
+
+backup_existing() {
+  local ts backup_dir
+  ts="$(date +%Y%m%d_%H%M%S)"
+  backup_dir="$KEYS_DIR/backup_$ts"
+  mkdir -p "$backup_dir"
+  mv -f "$KEYS_DIR"/*.pk8 "$KEYS_DIR"/*.x509.pem "$backup_dir"/ 2>/dev/null || true
+  echo "Backed up existing keys to: $backup_dir"
+}
+
+delete_existing() {
+  rm -f "$KEYS_DIR"/*.pk8 "$KEYS_DIR"/*.x509.pem 2>/dev/null || true
+  echo "Deleted existing key files in: $KEYS_DIR"
+}
+
+generate_one_key() {
+  local name="$1"
+  local tmp="$KEYS_DIR/.tmp_${name}_key.pem"
+  local subj="/CN=Android ${name}/"
+
+  echo "Generating: $name"
+
+  # Private key (PEM, unencrypted temp)
+  openssl genpkey -algorithm RSA -pkeyopt "rsa_keygen_bits:${RSA_BITS}" -out "$tmp" >/dev/null 2>&1
+
+  # Self-signed cert (public)
+  openssl req -new -x509 -key "$tmp" -out "$KEYS_DIR/${name}.x509.pem" \
+    -days 10000 -subj "$subj" >/dev/null 2>&1
+
+  # Convert to PKCS#8 encrypted with passphrase (what Android signing expects)
+  export KEY_PASS="$SIGN_PASS"
+  openssl pkcs8 -in "$tmp" -topk8 -out "$KEYS_DIR/${name}.pk8" \
+    -v2 aes-256-cbc -passout env:KEY_PASS >/dev/null 2>&1
+  unset KEY_PASS
+
+  rm -f "$tmp"
+
+  chmod 0600 "$KEYS_DIR/${name}.pk8" || true
+  chmod 0644 "$KEYS_DIR/${name}.x509.pem" || true
+}
+
+main() {
+  echo "Keys directory: $KEYS_DIR"
+  echo
+
+  if has_existing_keys; then
+    echo "Existing key files detected in $KEYS_DIR:"
+    ls -1 "$KEYS_DIR" | sed 's/^/  /'
+    echo
+    echo "What do you want to do?"
+    echo "  1) Reuse existing keys (default)"
+    echo "  2) Regenerate (backup old keys first)"
+    echo "  3) Regenerate (delete old keys)"
+    read -rp "Choose [1-3] (Enter = 1): " action
+    action="${action:-1}"
+
+    case "$action" in
+      1)
+        echo "Reusing existing keys. Nothing to do."
+        exit 0
+        ;;
+      2)
+        backup_existing
+        ;;
+      3)
+        echo "Type YES to confirm deleting existing key files:"
+        read -r confirm
+        [[ "$confirm" == "YES" ]] || { echo "Aborted."; exit 1; }
+        delete_existing
+        ;;
+      *)
+        echo "Invalid choice"; exit 2 ;;
+    esac
+  else
+    echo "No existing keys found. Will generate new keys."
+  fi
+
+  prompt_password
+  prompt_rsa_bits
+
+  echo
+  echo "Generating keys..."
+  for k in "${KEY_NAMES[@]}"; do
+    generate_one_key "$k"
+  done
+
+  echo
+  echo "Done. Generated:"
+  ls -1 "$KEYS_DIR" | sed 's/^/  /'
+  echo
+  echo "These should match your docker mount (-v \"\$KEYS_DIR:/srv/keys\")."
+}
+
+main "$@"
