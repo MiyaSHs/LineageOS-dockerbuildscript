@@ -51,8 +51,8 @@ stores_apply() {
   esac
 
   if [[ "${ADD_AURORA_STORE:-false}" == "true" ]]; then
-    # Aurora Store from GitHub releases
-    lines+=( "gh:AuroraOSS/AuroraStore|name=AuroraStore|asset=.*\\.apk$|privileged=false|cert=presigned" )
+    # Aurora Store from F-Droid (avoids GitHub release API 404s)
+    lines+=( "fdroid:com.aurora.store|name=AuroraStore|privileged=false|cert=presigned" )
   fi
 
   # Write back: auto block (if needed) + rest of file
