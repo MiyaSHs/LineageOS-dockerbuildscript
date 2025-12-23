@@ -24,6 +24,7 @@ docker_run_lineage() {
     -e "LOCAL_MIRROR=$LOCAL_MIRROR" \
     -e "ROOT_METHOD=$ROOT_METHOD" \
     -e "CUSTOM_PACKAGES=${CUSTOM_PACKAGES:-}" \
+    -e "REPLACE_STOCK_FDROID=${REPLACE_STOCK_FDROID:-false}" \
     -v "$SRC_DIR:/srv/src" \
     -v "$ZIPS_DIR:/srv/zips" \
     -v "$LOGS_DIR:/srv/logs" \
