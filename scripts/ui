@@ -17,6 +17,9 @@ prompt_nonempty() {
   done
 }
 
+# Menu choice:
+# - shows current value as default (if it matches one of the options)
+# - pressing Enter keeps default
 prompt_choice() {
   local var_name="$1"
   local prompt="$2"
@@ -24,19 +27,54 @@ prompt_choice() {
   local options=("$@")
   declare -n ref="$var_name"
 
+  local current="${ref:-}"
+  local default_idx=""
+  local i=1
+
   echo
   echo "$prompt"
-  local i=1
   for opt in "${options[@]}"; do
-    echo "  $i) $opt"
+    if [[ -n "$current" && "$opt" == "$current" ]]; then
+      echo "  $i) $opt (default)"
+      default_idx="$i"
+    else
+      echo "  $i) $opt"
+    fi
     ((i++))
   done
 
   while true; do
-    read -rp "Choose [1-${#options[@]}]: " choice
+    if [[ -n "$default_idx" ]]; then
+      read -rp "Choose [1-${#options[@]}] (Enter = $default_idx): " choice
+      if [[ -z "$choice" ]]; then
+        ref="$current"
+        return 0
+      fi
+    else
+      read -rp "Choose [1-${#options[@]}]: " choice
+    fi
+
     [[ "$choice" =~ ^[0-9]+$ ]] || continue
     (( choice >= 1 && choice <= ${#options[@]} )) || continue
     ref="${options[$((choice-1))]}"
-    break
+    return 0
+  done
+}
+
+prompt_int() {
+  local var_name="$1"
+  local prompt="$2"
+  local default="${3:-}"
+  declare -n ref="$var_name"
+
+  while true; do
+    if [[ -n "$default" ]]; then
+      read -rp "$prompt [$default]: " ref
+      ref="${ref:-$default}"
+    else
+      read -rp "$prompt: " ref
+    fi
+    [[ "$ref" =~ ^[0-9]+$ ]] && return 0
+    echo "Please enter a valid integer."
   done
 }
