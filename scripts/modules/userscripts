@@ -136,6 +136,8 @@ case "$ROOT_METHOD" in
     ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
     ensure_kconfig CONFIG_KRETPROBES y "$DEFCONFIG_PATH"
     ensure_kconfig CONFIG_HAVE_SYSCALL_TRACEPOINTS y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KPM y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KALLSYMS y "$DEFCONFIG_PATH"
     ensure_not_set CONFIG_KSU_MANUAL_HOOK "$DEFCONFIG_PATH"
     ;;
   *)
