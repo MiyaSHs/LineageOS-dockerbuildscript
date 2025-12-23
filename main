@@ -72,6 +72,9 @@ main() {
   save_variables
 
   prompt_choice BUILD_FLAVOR "Build flavor:" "base" "microg"
+
+  custom_apps_prompt
+
   prompt_choice ROOT_METHOD "Root method:" "none" "kernelsu" "kernelsu-next" "sukisu-ultra"
 
   export_config
