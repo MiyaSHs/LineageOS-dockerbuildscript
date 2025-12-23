@@ -21,7 +21,7 @@ save_variables() {
     echo '# true | false'
     printf 'SIGN_BUILDS=%q\n' "$SIGN_BUILDS"
     echo
-    echo '# e.g. 50G, 100G'
+    echo '# e.g. 50G, 100G, 200G'
     printf 'CCACHE_SIZE=%q\n' "$CCACHE_SIZE"
     echo
     echo '# integer, e.g. 2, 4, 8, 16'
@@ -37,15 +37,22 @@ save_variables() {
 main() {
   check_deps
 
-  # Ask every run, but show previous selection as default
-  prompt_nonempty DEVICE_LIST "DEVICE_LIST ($DEVICE_LIST)" "$DEVICE_LIST"
-  prompt_nonempty BRANCH_NAME "BRANCH_NAME ($BRANCH_NAME)" "$BRANCH_NAME"
+  if [[ ! -f "$PROJECT_DIR/VARIABLES" ]]; then
+    echo "First run tips:"
+    echo "  DEVICE_LIST  = your device codename (e.g. mondrian)"
+    echo "  BRANCH_NAME  = Lineage branch (e.g. lineage-23.0)"
+    echo
+  fi
 
-  prompt_choice SIGNATURE_SPOOFING "SIGNATURE_SPOOFING ($SIGNATURE_SPOOFING):" "no" "restricted" "yes"
-  prompt_choice SIGN_BUILDS "SIGN_BUILDS ($SIGN_BUILDS):" "true" "false"
+  # Ask every run, with previous selection as default
+  prompt_nonempty DEVICE_LIST "DEVICE_LIST" "$DEVICE_LIST"
+  prompt_nonempty BRANCH_NAME "BRANCH_NAME" "$BRANCH_NAME"
 
-  prompt_choice CCACHE_SIZE "CCACHE_SIZE ($CCACHE_SIZE)" "100G" "150G" "200G"
-  prompt_choice PARALLEL_JOBS "PARALLEL_JOBS ($PARALLEL_JOBS)" "1" "2" "4" "6" "8" "16" "32"
+  prompt_choice SIGNATURE_SPOOFING "SIGNATURE_SPOOFING:" "no" "restricted" "yes"
+  prompt_choice SIGN_BUILDS "SIGN_BUILDS:" "true" "false"
+
+  prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (e.g. 100G)" "$CCACHE_SIZE"
+  prompt_int PARALLEL_JOBS "PARALLEL_JOBS" "$PARALLEL_JOBS"
 
   save_variables
 
