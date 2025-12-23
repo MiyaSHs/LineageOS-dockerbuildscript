@@ -3,6 +3,20 @@ set -eo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/VARIABLES" ]]; then
+  # Exporta automaticamente tudo que vier do VARIABLES
+  set -a
+  source "$SCRIPT_DIR/VARIABLES"
+  set +a
+fi
+
+# --- GUARDA-CHUVA: sempre setar e exportar o payload dir ---
+: "${CUSTOM_APPS_PAYLOAD_DIR:="$SCRIPT_DIR/custom_apps_payload"}"
+export CUSTOM_APPS_PAYLOAD_DIR
+mkdir -p "$CUSTOM_APPS_PAYLOAD_DIR"
+
+
 source "$PROJECT_DIR/scripts/bootstrap"
 source "$PROJECT_DIR/scripts/ui"
 source "$PROJECT_DIR/scripts/modules/customapps"
