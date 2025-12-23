@@ -92,10 +92,7 @@ main() {
 
   # Only relevant for microG builds (WITH_GMS=true pulls vendor/partner_gms which already includes FDroid)
   if [[ "$BUILD_FLAVOR" == "microg" && "$STORE_CLIENT" != "fdroid" && "$STORE_CLIENT" != "none" ]]; then
-    echo
-    echo "microG builds include FDroid + PrivExt via vendor/partner_gms."
-    echo "You can keep them installed, or try removing them during before.sh (best-effort)."
-    prompt_choice REPLACE_STOCK_FDROID "Try to remove stock FDroid + PrivExt?" "false" "true"
+    REPLACE_STOCK_FDROID="true"
   else
     REPLACE_STOCK_FDROID="false"
   fi
