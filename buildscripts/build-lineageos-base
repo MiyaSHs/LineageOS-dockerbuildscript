@@ -8,6 +8,7 @@ source "$PROJECT_DIR/scripts/modules/workdir"
 source "$PROJECT_DIR/scripts/modules/manifests"
 source "$PROJECT_DIR/scripts/modules/userscripts"
 source "$PROJECT_DIR/scripts/modules/docker"
+source "$PROJECT_DIR/scripts/modules/customapps"
 
 check_deps
 require_var DEVICE_LIST
@@ -20,5 +21,6 @@ export ROOT_METHOD
 workdir_init "base"
 local_manifests_clear
 userscripts_write_before_sh
+custom_apps_prepare
 
 docker_run_lineage "false"
