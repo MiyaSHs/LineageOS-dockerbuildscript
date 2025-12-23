@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-# Resolve repo root (scripts/..)
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ---- Load config (VARIABLES) if present ----
@@ -17,8 +16,15 @@ fi
 : "${SIGN_BUILDS:=true}"              # true | false
 : "${CCACHE_SIZE:=100G}"              # e.g. 50G, 100G
 : "${PARALLEL_JOBS:=4}"               # integer
-: "${ZIP_UP_IMAGES:=true}"            # true | false (docker-lineage-cicd will ignore if unsupported)
-: "${LOCAL_MIRROR:=false}"            # true | false (docker-lineage-cicd will ignore if unsupported)
+: "${ZIP_UP_IMAGES:=true}"            # true | false
+: "${LOCAL_MIRROR:=false}"            # true | false
+
+# Store selection
+: "${STORE_CLIENT:=none}"             # none | fdroid | droidify | neostore
+: "${ADD_AURORA_STORE:=false}"        # true | false
+: "${REPLACE_STOCK_FDROID:=false}"    # true | false (microG only)
+
+# Custom apps
 : "${CUSTOM_APPS_FILE:=$PROJECT_DIR/CUSTOM_APPS}"  # one app spec per line
 : "${CUSTOM_PACKAGES:=}"                           # space-separated module names
 
@@ -37,5 +43,8 @@ check_deps() {
 }
 
 export_config() {
-  export DEVICE_LIST BRANCH_NAME SIGNATURE_SPOOFING SIGN_BUILDS CCACHE_SIZE PARALLEL_JOBS ZIP_UP_IMAGES LOCAL_MIRROR CUSTOM_APPS_FILE CUSTOM_PACKAGES
+  export DEVICE_LIST BRANCH_NAME SIGNATURE_SPOOFING SIGN_BUILDS CCACHE_SIZE PARALLEL_JOBS \
+         ZIP_UP_IMAGES LOCAL_MIRROR \
+         STORE_CLIENT ADD_AURORA_STORE REPLACE_STOCK_FDROID \
+         CUSTOM_APPS_FILE CUSTOM_PACKAGES
 }
