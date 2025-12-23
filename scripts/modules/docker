@@ -23,6 +23,7 @@ docker_run_lineage() {
     -e "ZIP_UP_IMAGES=$ZIP_UP_IMAGES" \
     -e "LOCAL_MIRROR=$LOCAL_MIRROR" \
     -e "ROOT_METHOD=$ROOT_METHOD" \
+    -e "KERNEL_OPT_PROFILE=${KERNEL_OPT_PROFILE:-battery}" \
     -e "CUSTOM_PACKAGES=${CUSTOM_PACKAGES:-}" \
     -e "REPLACE_STOCK_FDROID=${REPLACE_STOCK_FDROID:-false}" \
     -v "$SRC_DIR:/srv/src" \
