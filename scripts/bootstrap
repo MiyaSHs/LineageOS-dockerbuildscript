@@ -19,7 +19,7 @@ fi
 : "${PARALLEL_JOBS:=4}"               # integer
 : "${ZIP_UP_IMAGES:=true}"            # true | false (docker-lineage-cicd will ignore if unsupported)
 : "${LOCAL_MIRROR:=false}"            # true | false (docker-lineage-cicd will ignore if unsupported)
-: "${CUSTOM_PACKAGES_FILE:=$PROJECT_DIR/CUSTOM_PACKAGES}"  # one app spec per line
+: "${CUSTOM_APPS_FILE:=$PROJECT_DIR/CUSTOM_APPS}"  # one app spec per line
 : "${CUSTOM_PACKAGES:=}"                           # space-separated module names
 
 die() { echo "ERROR: $*" >&2; exit 1; }
