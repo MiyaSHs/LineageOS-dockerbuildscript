@@ -5,6 +5,7 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 source "$PROJECT_DIR/scripts/bootstrap"
 source "$PROJECT_DIR/scripts/ui"
+source "$PROJECT_DIR/scripts/modules/customapps"
 
 run_keygen_if_needed() {
   # Only run if SIGN_BUILDS=true
