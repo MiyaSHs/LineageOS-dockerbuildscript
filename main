@@ -82,7 +82,7 @@ main() {
   prompt_int PARALLEL_JOBS "PARALLEL_JOBS" "$PARALLEL_JOBS"
 
   prompt_choice KERNEL_OPT_PROFILE "Kernel optimization profile:" \
-    "none" "battery" "balanced" "performance"
+    "none" "battery (recommended, shouldnt hurt performance)" "balanced" "performance"
 
   prompt_choice BUILD_FLAVOR "Build flavor:" "base" "microg"
 
