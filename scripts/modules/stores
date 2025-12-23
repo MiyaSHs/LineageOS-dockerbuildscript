@@ -17,9 +17,9 @@ stores_apply() {
 
   # Remove any existing auto block
   awk -v b="$_STORES_BEGIN" -v e="$_STORES_END" '
-    $0==b {in=1; next}
-    $0==e {in=0; next}
-    !in {print}
+    $0==b {inside=1; next}
+    $0==e {inside=0; next}
+    !inside {print}
   ' "$CUSTOM_APPS_FILE" > "$tmp"
 
   # Build new auto block lines
