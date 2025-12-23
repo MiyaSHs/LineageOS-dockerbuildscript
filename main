@@ -6,9 +6,9 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$PROJECT_DIR/scripts/bootstrap"
 source "$PROJECT_DIR/scripts/ui"
 source "$PROJECT_DIR/scripts/modules/customapps"
+source "$PROJECT_DIR/scripts/modules/stores"
 
 run_keygen_if_needed() {
-  # Only run if SIGN_BUILDS=true
   if [[ "${SIGN_BUILDS}" == "true" ]]; then
     echo
     echo "Signing is enabled."
@@ -41,6 +41,15 @@ save_variables() {
     echo '# integer, e.g. 2, 4, 8, 16'
     printf 'PARALLEL_JOBS=%q\n' "$PARALLEL_JOBS"
     echo
+    echo '# Store client (system app): none | fdroid | droidify | neostore'
+    printf 'STORE_CLIENT=%q\n' "$STORE_CLIENT"
+    echo
+    echo '# Add Aurora Store as system app: true | false'
+    printf 'ADD_AURORA_STORE=%q\n' "$ADD_AURORA_STORE"
+    echo
+    echo '# Try to remove FDroid + PrivExt from vendor/partner_gms (microG builds only): true | false'
+    printf 'REPLACE_STOCK_FDROID=%q\n' "$REPLACE_STOCK_FDROID"
+    echo
     echo '# Optional (ignored if unsupported by container)'
     printf 'ZIP_UP_IMAGES=%q\n' "$ZIP_UP_IMAGES"
     printf 'LOCAL_MIRROR=%q\n' "$LOCAL_MIRROR"
@@ -69,13 +78,29 @@ main() {
   prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (e.g. 100G)" "$CCACHE_SIZE"
   prompt_int PARALLEL_JOBS "PARALLEL_JOBS" "$PARALLEL_JOBS"
 
-  save_variables
-
   prompt_choice BUILD_FLAVOR "Build flavor:" "base" "microg"
 
+  # Store selection (separate from custom apps UI)
+  prompt_choice STORE_CLIENT "Store client (system app):" "none" "fdroid" "droidify" "neostore"
+  prompt_choice ADD_AURORA_STORE "Add Aurora Store (system app)?" "false" "true"
+
+  # Only relevant for microG builds (WITH_GMS=true pulls vendor/partner_gms which already includes FDroid)
+  if [[ "$BUILD_FLAVOR" == "microg" && "$STORE_CLIENT" != "fdroid" && "$STORE_CLIENT" != "none" ]]; then
+    echo
+    echo "microG builds include FDroid + PrivExt via vendor/partner_gms."
+    echo "You can keep them installed, or try removing them during before.sh (best-effort)."
+    prompt_choice REPLACE_STOCK_FDROID "Try to remove stock FDroid + PrivExt?" "false" "true"
+  else
+    REPLACE_STOCK_FDROID="false"
+  fi
+
+  # Apply store choices into CUSTOM_APPS (auto block), then optionally let user edit/add extras
+  stores_apply "$BUILD_FLAVOR"
   custom_apps_prompt
 
   prompt_choice ROOT_METHOD "Root method:" "none" "kernelsu" "kernelsu-next" "sukisu-ultra"
+
+  save_variables
 
   export_config
   export ROOT_METHOD
@@ -86,7 +111,6 @@ main() {
   esac
 }
 
-# Safe if someone sources this file
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   main "$@"
 fi
