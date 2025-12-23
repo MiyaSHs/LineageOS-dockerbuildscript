@@ -33,6 +33,14 @@ if [[ -z "$TOP" || ! -d "$TOP/.repo" ]]; then
 fi
 cd "$TOP"
 
+# Inject custom system apps (if provided)
+if [[ -d /srv/custom_apps/vendor/custom_apps ]]; then
+  echo "[before.sh] Installing custom apps into vendor/custom_apps..."
+  rm -rf "$TOP/vendor/custom_apps"
+  mkdir -p "$TOP/vendor"
+  cp -a /srv/custom_apps/vendor/custom_apps "$TOP/vendor/"
+fi
+
 : "${ROOT_METHOD:=none}"
 : "${DEVICE_LIST:=}"
 : "${PARALLEL_JOBS:=4}"
