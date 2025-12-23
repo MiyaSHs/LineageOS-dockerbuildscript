@@ -41,6 +41,9 @@ save_variables() {
     echo '# integer, e.g. 2, 4, 8, 16'
     printf 'PARALLEL_JOBS=%q\n' "$PARALLEL_JOBS"
     echo
+    echo '# Kernel optimization: none | battery | balanced | performance'
+    printf 'KERNEL_OPT_PROFILE=%q\n' "$KERNEL_OPT_PROFILE"
+    echo
     echo '# Store client (system app): none | fdroid | droidify | neostore'
     printf 'STORE_CLIENT=%q\n' "$STORE_CLIENT"
     echo
@@ -75,8 +78,11 @@ main() {
   prompt_choice SIGN_BUILDS "SIGN_BUILDS:" "true" "false"
   run_keygen_if_needed
 
-  prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (e.g. 100G, higher means faster following builds)" "$CCACHE_SIZE"
+  prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (e.g. 100G)" "$CCACHE_SIZE"
   prompt_int PARALLEL_JOBS "PARALLEL_JOBS" "$PARALLEL_JOBS"
+
+  prompt_choice KERNEL_OPT_PROFILE "Kernel optimization profile:" \
+    "none" "battery" "balanced" "performance"
 
   prompt_choice BUILD_FLAVOR "Build flavor:" "base" "microg"
 
