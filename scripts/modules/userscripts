@@ -69,18 +69,14 @@ if [[ "$REPLACE_STOCK_FDROID" == "true" && -d "$TOP/vendor/partner_gms" ]]; then
 fi
 
 : "${ROOT_METHOD:=none}"
+: "${KERNEL_OPT_PROFILE:=battery}"
 : "${DEVICE_LIST:=}"
 : "${PARALLEL_JOBS:=4}"
 
-if [[ "$ROOT_METHOD" == "none" ]]; then
-  echo "[before.sh] ROOT_METHOD=none -> skipping root integration."
-  exit 0
-fi
-
-# Root integration assumes a single device codename
+# Kernel/root integration assumes a single device codename
 if [[ "$DEVICE_LIST" == *","* || "$DEVICE_LIST" == *" "* ]]; then
-  echo "[before.sh] Multiple devices in DEVICE_LIST='$DEVICE_LIST'. Root integration expects a single device build."
-  exit 2
+  echo "[before.sh] Multiple devices in DEVICE_LIST='$DEVICE_LIST'. Kernel/root patching expects a single device build. Continuing without patching."
+  exit 0
 fi
 
 DEVICE="$DEVICE_LIST"
@@ -117,9 +113,11 @@ fi
 KERNEL_DIR="$(realpath "$(dirname "$KCONF")/../../../..")"
 DEFCONFIG_PATH="$(realpath "$KCONF")"
 
-echo "[before.sh] Repo top:   $TOP"
-echo "[before.sh] Kernel dir: $KERNEL_DIR"
-echo "[before.sh] Defconfig:  $DEFCONFIG_PATH"
+echo "[before.sh] Repo top:    $TOP"
+echo "[before.sh] Kernel dir:  $KERNEL_DIR"
+echo "[before.sh] Defconfig:   $DEFCONFIG_PATH"
+echo "[before.sh] Opt profile: $KERNEL_OPT_PROFILE"
+echo "[before.sh] Root method: $ROOT_METHOD"
 
 cd "$KERNEL_DIR"
 
@@ -148,6 +146,121 @@ ensure_not_set() {
     echo "# ${key} is not set" >> "$file"
   fi
 }
+
+# Detect if a Kconfig symbol exists (so we can safely enable O3 if supported)
+kconfig_has() {
+  local sym="$1"
+  grep -Rqs --include='Kconfig*' "^[[:space:]]*config[[:space:]]\\+${sym}\\b" . 2>/dev/null
+}
+
+apply_kernel_profile() {
+  local profile="$1"
+  local cfg="$2"
+
+  case "$profile" in
+    none)
+      echo "[before.sh] KERNEL_OPT_PROFILE=none -> skipping kernel optimization."
+      return 0
+      ;;
+
+    battery)
+      echo "[before.sh] Applying battery-leaning kernel optimizations..."
+
+      # ThinLTO (less RAM than full LTO; still increases link RAM vs no LTO)
+      ensure_kconfig CONFIG_LTO_CLANG y "$cfg"
+      ensure_kconfig CONFIG_LTO_CLANG_THIN y "$cfg"
+      ensure_not_set CONFIG_LTO_CLANG_FULL "$cfg"
+      ensure_not_set CONFIG_LTO_NONE "$cfg"
+
+      # Size-leaning optimization (typically -Oz/-Os depending on tree/toolchain)
+      ensure_kconfig CONFIG_CC_OPTIMIZE_FOR_SIZE y "$cfg"
+
+      # ZRAM + zstd support (userspace picks algorithm, but kernel must support it)
+      ensure_kconfig CONFIG_ZSMALLOC y "$cfg"
+      ensure_kconfig CONFIG_ZRAM m "$cfg"
+      ensure_kconfig CONFIG_CRYPTO_ZSTD y "$cfg"
+      ensure_kconfig CONFIG_ZSTD_COMPRESS y "$cfg"
+      ensure_kconfig CONFIG_ZSTD_DECOMPRESS y "$cfg"
+
+      # Module compression
+      ensure_kconfig CONFIG_MODULE_COMPRESS y "$cfg"
+      ensure_kconfig CONFIG_MODULE_COMPRESS_ZSTD y "$cfg"
+
+      # Trim heavy debug (safe-ish for release builds)
+      ensure_not_set CONFIG_DEBUG_INFO "$cfg"
+      ensure_not_set CONFIG_GCOV_KERNEL "$cfg"
+      ensure_not_set CONFIG_KASAN "$cfg"
+      ensure_not_set CONFIG_KCSAN "$cfg"
+      ensure_not_set CONFIG_KFENCE "$cfg"
+      ensure_not_set CONFIG_DEBUG_KERNEL "$cfg"
+
+      # Optional if present
+      ensure_kconfig CONFIG_LD_DEAD_CODE_DATA_ELIMINATION y "$cfg" || true
+      ensure_kconfig CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL y "$cfg" || true
+      ;;
+
+    balanced)
+      echo "[before.sh] Applying balanced kernel optimizations..."
+
+      ensure_kconfig CONFIG_LTO_CLANG y "$cfg"
+      ensure_kconfig CONFIG_LTO_CLANG_THIN y "$cfg"
+      ensure_not_set CONFIG_LTO_CLANG_FULL "$cfg"
+      ensure_not_set CONFIG_LTO_NONE "$cfg"
+
+      # Keep default perf (-O2)
+      ensure_not_set CONFIG_CC_OPTIMIZE_FOR_SIZE "$cfg"
+      ensure_kconfig CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE y "$cfg"
+
+      ensure_kconfig CONFIG_ZSMALLOC y "$cfg"
+      ensure_kconfig CONFIG_ZRAM m "$cfg"
+      ensure_kconfig CONFIG_CRYPTO_ZSTD y "$cfg"
+      ensure_kconfig CONFIG_ZSTD_COMPRESS y "$cfg"
+      ensure_kconfig CONFIG_ZSTD_DECOMPRESS y "$cfg"
+
+      ensure_kconfig CONFIG_MODULE_COMPRESS y "$cfg"
+      ensure_kconfig CONFIG_MODULE_COMPRESS_ZSTD y "$cfg"
+
+      ensure_kconfig CONFIG_LD_DEAD_CODE_DATA_ELIMINATION y "$cfg" || true
+      ;;
+
+    performance)
+      echo "[before.sh] Applying performance kernel optimizations (ThinLTO + O3 if available)..."
+
+      # Keep ThinLTO (your request), avoid full LTO OOM
+      ensure_kconfig CONFIG_LTO_CLANG y "$cfg"
+      ensure_kconfig CONFIG_LTO_CLANG_THIN y "$cfg"
+      ensure_not_set CONFIG_LTO_CLANG_FULL "$cfg"
+      ensure_not_set CONFIG_LTO_NONE "$cfg"
+
+      ensure_not_set CONFIG_CC_OPTIMIZE_FOR_SIZE "$cfg"
+
+      # Prefer O3 if the kernel tree supports it, else O2
+      if kconfig_has CC_OPTIMIZE_FOR_PERFORMANCE_O3; then
+        ensure_kconfig CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3 y "$cfg"
+        ensure_not_set CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE "$cfg"
+      else
+        ensure_kconfig CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE y "$cfg"
+      fi
+
+      ensure_kconfig CONFIG_MODULE_COMPRESS y "$cfg"
+      ensure_kconfig CONFIG_MODULE_COMPRESS_ZSTD y "$cfg"
+      ensure_kconfig CONFIG_LD_DEAD_CODE_DATA_ELIMINATION y "$cfg" || true
+      ;;
+
+    *)
+      echo "[before.sh] Unknown KERNEL_OPT_PROFILE='$profile' (expected none|battery|balanced|performance)"
+      return 1
+      ;;
+  esac
+}
+
+apply_kernel_profile "$KERNEL_OPT_PROFILE" "$DEFCONFIG_PATH"
+
+# ---- Root integration (optional) ----
+if [[ "$ROOT_METHOD" == "none" ]]; then
+  echo "[before.sh] ROOT_METHOD=none -> skipping root integration."
+  exit 0
+fi
 
 case "$ROOT_METHOD" in
   kernelsu)
