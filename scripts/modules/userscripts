@@ -48,12 +48,10 @@ if [[ "$REPLACE_STOCK_FDROID" == "true" && -d "$TOP/vendor/partner_gms" ]]; then
 
   remove_from_partner_gms() {
     local token="$1"
-    # Only touch product/package list files (not module definitions)
     local files
     files="$(grep -RIl --include='*.mk' --include='*.xml' "$token" "$TOP/vendor/partner_gms" 2>/dev/null || true)"
     [[ -n "$files" ]] || return 0
     while IFS= read -r f; do
-      # Remove token occurrences; keep file syntactically valid
       sed -i \
         -e "s/[[:space:]]\\b${token}\\b[[:space:]]*/ /g" \
         -e "s/[[:space:]]\\{2,\\}/ /g" \
@@ -61,7 +59,6 @@ if [[ "$REPLACE_STOCK_FDROID" == "true" && -d "$TOP/vendor/partner_gms" ]]; then
     done <<<"$files"
   }
 
-  # Common module names seen in partner_gms trees
   remove_from_partner_gms "FDroid"
   remove_from_partner_gms "FDroidPrivilegedExtension"
   remove_from_partner_gms "F-Droid"
@@ -72,6 +69,11 @@ fi
 : "${KERNEL_OPT_PROFILE:=battery}"
 : "${DEVICE_LIST:=}"
 : "${PARALLEL_JOBS:=4}"
+
+: "${INTEGRATE_SUSFS:=false}"
+: "${SUSFS_REF:=}"
+: "${SUSFS_KERNEL_VERSION:=}"
+: "${SUSFS_REPO_URL:=https://github.com/ShirkNeko/susfs4ksu.git}"
 
 # Kernel/root integration assumes a single device codename
 if [[ "$DEVICE_LIST" == *","* || "$DEVICE_LIST" == *" "* ]]; then
@@ -88,7 +90,7 @@ locate_defconfig() {
 
 KCONF="$(locate_defconfig)"
 
-# If missing, try to trigger roomservice + sync now (device-independent)
+# If missing, try to trigger roomservice + sync now
 if [[ -z "$KCONF" ]]; then
   echo "[before.sh] Defconfig not present yet. Running breakfast + repo sync to fetch device/kernel repos..."
   if [[ -f build/envsetup.sh ]]; then
@@ -113,11 +115,14 @@ fi
 KERNEL_DIR="$(realpath "$(dirname "$KCONF")/../../../..")"
 DEFCONFIG_PATH="$(realpath "$KCONF")"
 
-echo "[before.sh] Repo top:    $TOP"
-echo "[before.sh] Kernel dir:  $KERNEL_DIR"
-echo "[before.sh] Defconfig:   $DEFCONFIG_PATH"
-echo "[before.sh] Opt profile: $KERNEL_OPT_PROFILE"
-echo "[before.sh] Root method: $ROOT_METHOD"
+echo "[before.sh] Repo top:      $TOP"
+echo "[before.sh] Kernel dir:    $KERNEL_DIR"
+echo "[before.sh] Defconfig:     $DEFCONFIG_PATH"
+echo "[before.sh] Opt profile:   $KERNEL_OPT_PROFILE"
+echo "[before.sh] Root method:   $ROOT_METHOD"
+echo "[before.sh] SUSFS enabled: $INTEGRATE_SUSFS"
+echo "[before.sh] SUSFS ref:     $SUSFS_REF"
+echo "[before.sh] SUSFS repo:    $SUSFS_REPO_URL"
 
 cd "$KERNEL_DIR"
 
@@ -147,7 +152,6 @@ ensure_not_set() {
   fi
 }
 
-# Detect if a Kconfig symbol exists (so we can safely enable O3 if supported)
 kconfig_has() {
   local sym="$1"
   grep -Rqs --include='Kconfig*' "^[[:space:]]*config[[:space:]]\\+${sym}\\b" . 2>/dev/null
@@ -166,27 +170,22 @@ apply_kernel_profile() {
     battery)
       echo "[before.sh] Applying battery-leaning kernel optimizations..."
 
-      # ThinLTO (less RAM than full LTO; still increases link RAM vs no LTO)
       ensure_kconfig CONFIG_LTO_CLANG y "$cfg"
       ensure_kconfig CONFIG_LTO_CLANG_THIN y "$cfg"
       ensure_not_set CONFIG_LTO_CLANG_FULL "$cfg"
       ensure_not_set CONFIG_LTO_NONE "$cfg"
 
-      # Size-leaning optimization (typically -Oz/-Os depending on tree/toolchain)
       ensure_kconfig CONFIG_CC_OPTIMIZE_FOR_SIZE y "$cfg"
 
-      # ZRAM + zstd support (userspace picks algorithm, but kernel must support it)
       ensure_kconfig CONFIG_ZSMALLOC y "$cfg"
       ensure_kconfig CONFIG_ZRAM m "$cfg"
       ensure_kconfig CONFIG_CRYPTO_ZSTD y "$cfg"
       ensure_kconfig CONFIG_ZSTD_COMPRESS y "$cfg"
       ensure_kconfig CONFIG_ZSTD_DECOMPRESS y "$cfg"
 
-      # Module compression
       ensure_kconfig CONFIG_MODULE_COMPRESS y "$cfg"
       ensure_kconfig CONFIG_MODULE_COMPRESS_ZSTD y "$cfg"
 
-      # Trim heavy debug (safe-ish for release builds)
       ensure_not_set CONFIG_DEBUG_INFO "$cfg"
       ensure_not_set CONFIG_GCOV_KERNEL "$cfg"
       ensure_not_set CONFIG_KASAN "$cfg"
@@ -194,7 +193,6 @@ apply_kernel_profile() {
       ensure_not_set CONFIG_KFENCE "$cfg"
       ensure_not_set CONFIG_DEBUG_KERNEL "$cfg"
 
-      # Optional if present
       ensure_kconfig CONFIG_LD_DEAD_CODE_DATA_ELIMINATION y "$cfg" || true
       ensure_kconfig CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL y "$cfg" || true
       ;;
@@ -207,7 +205,6 @@ apply_kernel_profile() {
       ensure_not_set CONFIG_LTO_CLANG_FULL "$cfg"
       ensure_not_set CONFIG_LTO_NONE "$cfg"
 
-      # Keep default perf (-O2)
       ensure_not_set CONFIG_CC_OPTIMIZE_FOR_SIZE "$cfg"
       ensure_kconfig CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE y "$cfg"
 
@@ -226,7 +223,6 @@ apply_kernel_profile() {
     performance)
       echo "[before.sh] Applying performance kernel optimizations (ThinLTO + O3 if available)..."
 
-      # Keep ThinLTO (your request), avoid full LTO OOM
       ensure_kconfig CONFIG_LTO_CLANG y "$cfg"
       ensure_kconfig CONFIG_LTO_CLANG_THIN y "$cfg"
       ensure_not_set CONFIG_LTO_CLANG_FULL "$cfg"
@@ -234,7 +230,6 @@ apply_kernel_profile() {
 
       ensure_not_set CONFIG_CC_OPTIMIZE_FOR_SIZE "$cfg"
 
-      # Prefer O3 if the kernel tree supports it, else O2
       if kconfig_has CC_OPTIMIZE_FOR_PERFORMANCE_O3; then
         ensure_kconfig CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3 y "$cfg"
         ensure_not_set CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE "$cfg"
@@ -294,9 +289,139 @@ case "$ROOT_METHOD" in
 esac
 
 echo "[before.sh] Root integration done: $ROOT_METHOD"
+
+# ---- SUSFS integration (optional) ----
+if [[ "$INTEGRATE_SUSFS" == "true" ]]; then
+  if [[ -z "$SUSFS_REF" ]]; then
+    echo "[before.sh] INTEGRATE_SUSFS=true but SUSFS_REF is empty -> skipping SUSFS."
+  else
+    echo "[before.sh] Integrating SUSFS (ref=$SUSFS_REF)..."
+    # shellcheck disable=SC1091
+    source /srv/userscripts/susfs.sh
+    apply_susfs "$KERNEL_DIR" "$DEFCONFIG_PATH" "$SUSFS_REF"
+    echo "[before.sh] SUSFS integration done."
+  fi
+fi
+EOF
+
+  # New helper file: susfs.sh (GitHub repo default)
+  cat > "$USERSCRIPTS_DIR/susfs.sh" <<'EOF'
+#!/usr/bin/env bash
+set -eo pipefail
+
+apply_susfs() {
+  local kernel_dir="$1"
+  local defconfig_path="$2"
+  local susfs_ref="$3"
+
+  : "${SUSFS_REPO_URL:=https://github.com/ShirkNeko/susfs4ksu.git}"
+  : "${SUSFS_KERNEL_VERSION:=}"
+
+  if [[ -z "$susfs_ref" ]]; then
+    echo "[susfs] SUSFS_REF is empty; skipping."
+    return 0
+  fi
+
+  command -v git >/dev/null 2>&1 || { echo "[susfs] ERROR: git not found in container."; return 20; }
+  command -v patch >/dev/null 2>&1 || { echo "[susfs] ERROR: patch not found in container."; return 21; }
+
+  local tmp="/tmp/susfs4ksu.$$"
+  rm -rf "$tmp"
+
+  echo "[susfs] Cloning SUSFS repo: $SUSFS_REPO_URL (ref=$susfs_ref)"
+  git clone --depth 1 --branch "$susfs_ref" "$SUSFS_REPO_URL" "$tmp"
+
+  # Find KernelSU dir produced by the root setup scripts
+  local ksu_dir=""
+  ksu_dir="$(find "$kernel_dir" -maxdepth 3 -type d -name KernelSU -print -quit 2>/dev/null || true)"
+  if [[ -z "$ksu_dir" ]]; then
+    echo "[susfs] ERROR: Could not find KernelSU directory under: $kernel_dir"
+    echo "[susfs] Did KernelSU/SukiSU integration run successfully?"
+    rm -rf "$tmp"
+    return 22
+  fi
+
+  # Choose common dir (GKI kernels often use kernel_root/common)
+  local common_dir="$kernel_dir/common"
+  [[ -d "$common_dir" ]] || common_dir="$kernel_dir"
+
+  # Detect kernel version for selecting the right 50_add_susfs patch
+  local kver="${SUSFS_KERNEL_VERSION}"
+  if [[ -z "$kver" ]]; then
+    if [[ "$susfs_ref" =~ ([0-9]+\.[0-9]+) ]]; then
+      kver="${BASH_REMATCH[1]}"
+    fi
+  fi
+  if [[ -z "$kver" && -f "$common_dir/Makefile" ]]; then
+    local v p
+    v="$(grep -E '^VERSION[[:space:]]*=' "$common_dir/Makefile" | head -n1 | awk -F= '{gsub(/[[:space:]]/,"",$2);print $2}')"
+    p="$(grep -E '^PATCHLEVEL[[:space:]]*=' "$common_dir/Makefile" | head -n1 | awk -F= '{gsub(/[[:space:]]/,"",$2);print $2}')"
+    if [[ -n "$v" && -n "$p" ]]; then
+      kver="${v}.${p}"
+    fi
+  fi
+
+  local kpatch=""
+  if [[ -n "$kver" && -f "$tmp/kernel_patches/50_add_susfs_in_kernel-${kver}.patch" ]]; then
+    kpatch="$tmp/kernel_patches/50_add_susfs_in_kernel-${kver}.patch"
+  else
+    kpatch="$(ls -1 "$tmp"/kernel_patches/50_add_susfs_in_kernel-*.patch 2>/dev/null | head -n1 || true)"
+  fi
+
+  if [[ -z "$kpatch" ]]; then
+    echo "[susfs] ERROR: Could not find kernel_patches/50_add_susfs_in_kernel-*.patch in SUSFS repo."
+    echo "[susfs] NOTE: This assumes the repo layout includes kernel_patches/ like the upstream docs."
+    rm -rf "$tmp"
+    return 23
+  fi
+
+  if [[ ! -f "$tmp/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" ]]; then
+    echo "[susfs] ERROR: Missing KernelSU patch: kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+    rm -rf "$tmp"
+    return 24
+  fi
+
+  echo "[susfs] Using kernel patch: $(basename "$kpatch") (detected kernel=${kver:-unknown})"
+  echo "[susfs] KernelSU dir: $ksu_dir"
+  echo "[susfs] Common dir:   $common_dir"
+
+  # Copy patches/files into place
+  cp -f "$tmp/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" "$ksu_dir/"
+  cp -f "$kpatch" "$common_dir/"
+
+  mkdir -p "$common_dir/fs" "$common_dir/include/linux"
+  if [[ -d "$tmp/kernel_patches/fs" ]]; then
+    cp -af "$tmp/kernel_patches/fs/." "$common_dir/fs/"
+  fi
+  if [[ -d "$tmp/kernel_patches/include/linux" ]]; then
+    cp -af "$tmp/kernel_patches/include/linux/." "$common_dir/include/linux/"
+  fi
+
+  # Apply patches
+  echo "[susfs] Patching KernelSU..."
+  ( cd "$ksu_dir" && patch -p1 < 10_enable_susfs_for_ksu.patch )
+
+  local kp_name
+  kp_name="$(basename "$kpatch")"
+  echo "[susfs] Patching kernel common..."
+  ( cd "$common_dir" && patch -p1 < "$kp_name" )
+
+  # A14+ tip from upstream docs: remove protected exports file if present
+  rm -f "$common_dir/android/abi_gki_protected_exports_aarch64" \
+        "$common_dir/android/abi_gki_protected_exports_x86_64" 2>/dev/null || true
+
+  # Enable configs (relies on ensure_kconfig defined in before.sh)
+  if declare -F ensure_kconfig >/dev/null 2>&1 && [[ -f "$defconfig_path" ]]; then
+    ensure_kconfig CONFIG_KSU_SUSFS y "$defconfig_path"
+  fi
+
+  rm -rf "$tmp"
+}
 EOF
 
   chmod 0755 "$USERSCRIPTS_DIR/before.sh"
+  chmod 0644 "$USERSCRIPTS_DIR/susfs.sh"
+
   userscripts_assert_exec_mount
   [[ -x "$USERSCRIPTS_DIR/before.sh" ]] || { echo "ERROR: before.sh is not executable"; exit 4; }
 }
