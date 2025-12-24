@@ -82,15 +82,38 @@ if [[ "$DEVICE_LIST" == *","* || "$DEVICE_LIST" == *" "* ]]; then
 fi
 
 DEVICE="$DEVICE_LIST"
-DEFCONFIG_NAME="${DEVICE}_GKI.config"
 
 locate_defconfig() {
-  find . -type f -path "*/arch/arm64/configs/vendor/${DEFCONFIG_NAME}" -print -quit 2>/dev/null || true
+  # Try common patterns first (GKI), then fall back to fuzzy matches
+  local p
+  for p in \
+    "*/arch/arm64/configs/vendor/${DEVICE}_GKI.config" \
+    "*/arch/arm64/configs/vendor/${DEVICE}.config" \
+    "*/arch/arm64/configs/vendor/${DEVICE}_defconfig" \
+    "*/arch/arm64/configs/${DEVICE}_defconfig"
+  do
+    local hit
+    hit="$(find . -type f -path "$p" -print -quit 2>/dev/null || true)"
+    [[ -n "$hit" ]] && { echo "$hit"; return 0; }
+  done
+
+  # Fuzzy: anything containing device + GKI
+  local hit
+  hit="$(find . -type f -path "*/arch/arm64/configs/*" 2>/dev/null \
+    | awk -v d="$DEVICE" 'BEGIN{IGNORECASE=1} index($0,d)>0 && index($0,"gki")>0 {print; exit}')"
+  [[ -n "$hit" ]] && { echo "$hit"; return 0; }
+
+  # Fuzzy: anything containing device + defconfig
+  hit="$(find . -type f -path "*/arch/arm64/configs/*" 2>/dev/null \
+    | awk -v d="$DEVICE" 'BEGIN{IGNORECASE=1} index($0,d)>0 && index($0,"defconfig")>0 {print; exit}')"
+  [[ -n "$hit" ]] && { echo "$hit"; return 0; }
+
+  return 1
 }
 
-KCONF="$(locate_defconfig)"
+KCONF="$(locate_defconfig || true)"
 
-# If missing, try to trigger roomservice + sync now
+# If missing, try to trigger roomservice + sync now (best effort)
 if [[ -z "$KCONF" ]]; then
   echo "[before.sh] Defconfig not present yet. Running breakfast + repo sync to fetch device/kernel repos..."
   if [[ -f build/envsetup.sh ]]; then
@@ -102,13 +125,13 @@ if [[ -z "$KCONF" ]]; then
   fi
 
   repo sync -c -j"$PARALLEL_JOBS" --force-sync || true
-  KCONF="$(locate_defconfig)"
+  KCONF="$(locate_defconfig || true)"
 fi
 
 if [[ -z "$KCONF" ]]; then
-  echo "[before.sh] ERROR: Could not find ${DEFCONFIG_NAME} under arch/arm64/configs/vendor/"
-  echo "[before.sh] Debug: any *_GKI.config under vendor configs?"
-  find . -type f -path "*/arch/arm64/configs/vendor/*_GKI.config" -maxdepth 12 2>/dev/null | head -n 100 || true
+  echo "[before.sh] ERROR: Could not find a defconfig for device '$DEVICE' under arch/arm64/configs/"
+  echo "[before.sh] Debug: some config candidates:"
+  find . -type f -path "*/arch/arm64/configs/*" -maxdepth 14 2>/dev/null | head -n 150 || true
   exit 3
 fi
 
@@ -274,13 +297,7 @@ case "$ROOT_METHOD" in
     echo "[before.sh] Integrating SukiSU Ultra..."
     curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
     ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KSU_SYSCALL_HOOK y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KRETPROBES y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_HAVE_SYSCALL_TRACEPOINTS y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KPM y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KALLSYMS y "$DEFCONFIG_PATH"
-    ensure_not_set CONFIG_KSU_MANUAL_HOOK "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KSU_SYSCALL_HOOK y "$DEFCONFIG_PATH" || true
     ;;
   *)
     echo "[before.sh] Unknown ROOT_METHOD='$ROOT_METHOD'"
@@ -304,16 +321,10 @@ if [[ "$INTEGRATE_SUSFS" == "true" ]]; then
 fi
 EOF
 
-  # New helper file: susfs.sh (universal patch selection)
+  # New helper file: susfs.sh (universal patch selection + SukiSU skip for KSU patch)
   cat > "$USERSCRIPTS_DIR/susfs.sh" <<'EOF'
 #!/usr/bin/env bash
 set -eo pipefail
-
-# Universal SUSFS patcher:
-# - clones SUSFS repo at SUSFS_REF
-# - applies KernelSU patch: kernel_patches/**/10_enable_susfs_for_ksu.patch (fixed path in most branches)
-# - applies the best matching kernel patch among: kernel_patches/**/50_add_susfs*.patch
-#   using a scoring heuristic based on SUSFS_REF, kernel version, android token, gki token.
 
 apply_susfs() {
   local kernel_dir="$1"
@@ -322,14 +333,15 @@ apply_susfs() {
 
   : "${SUSFS_REPO_URL:=https://github.com/ShirkNeko/susfs4ksu.git}"
   : "${SUSFS_KERNEL_VERSION:=}"
+  : "${ROOT_METHOD:=none}"
 
   if [[ -z "$susfs_ref" ]]; then
     echo "[susfs] SUSFS_REF is empty; skipping."
     return 0
   fi
 
-  command -v git >/dev/null 2>&1 || { echo "[susfs] ERROR: git not found in container."; return 20; }
-  command -v patch >/dev/null 2>&1 || { echo "[susfs] ERROR: patch not found in container."; return 21; }
+  command -v git >/dev/null 2>&1 || { echo "[susfs] ERROR: git not found."; return 20; }
+  command -v patch >/dev/null 2>&1 || { echo "[susfs] ERROR: patch not found."; return 21; }
 
   local tmp="/tmp/susfs4ksu.$$"
   rm -rf "$tmp"
@@ -338,25 +350,22 @@ apply_susfs() {
   echo "[susfs] Cloning SUSFS repo: $SUSFS_REPO_URL (ref=$susfs_ref)"
   git clone --depth 1 --branch "$susfs_ref" "$SUSFS_REPO_URL" "$tmp"
 
-  # Find KernelSU dir produced by the root setup scripts
+  # Find KernelSU dir (produced by root setup scripts)
   local ksu_dir=""
   ksu_dir="$(find "$kernel_dir" -maxdepth 4 -type d -name KernelSU -print -quit 2>/dev/null || true)"
   if [[ -z "$ksu_dir" ]]; then
     echo "[susfs] ERROR: Could not find KernelSU directory under: $kernel_dir"
-    echo "[susfs] Did KernelSU/SukiSU integration run successfully?"
     return 22
   fi
 
-  # Choose common dir (GKI kernels often use kernel_root/common). If missing, use kernel root.
+  # Common dir (GKI kernels often use kernel_root/common). If missing, use kernel root.
   local common_dir="$kernel_dir/common"
   [[ -d "$common_dir" ]] || common_dir="$kernel_dir"
 
-  # Detect kernel version for matching patch names (best effort)
+  # Detect kernel version for better matching (best effort)
   local kver="${SUSFS_KERNEL_VERSION}"
-  if [[ -z "$kver" ]]; then
-    if [[ "$susfs_ref" =~ ([0-9]+\.[0-9]+) ]]; then
-      kver="${BASH_REMATCH[1]}"
-    fi
+  if [[ -z "$kver" && "$susfs_ref" =~ ([0-9]+\.[0-9]+) ]]; then
+    kver="${BASH_REMATCH[1]}"
   fi
   if [[ -z "$kver" && -f "$common_dir/Makefile" ]]; then
     local v p
@@ -367,28 +376,34 @@ apply_susfs() {
     fi
   fi
 
-  # Extract android token from ref (android12/android13/android14/...)
   local and_token=""
   if [[ "$susfs_ref" =~ (android[0-9]+) ]]; then
     and_token="${BASH_REMATCH[1]}"
   fi
 
-  # Locate the KernelSU enable patch (keep robust: search by filename)
-  local ksu_patch=""
-  ksu_patch="$(find "$tmp" -type f -name '10_enable_susfs_for_ksu.patch' -print -quit 2>/dev/null || true)"
-  if [[ -z "$ksu_patch" ]]; then
-    echo "[susfs] ERROR: Could not find 10_enable_susfs_for_ksu.patch in SUSFS repo."
-    return 24
+  # KernelSU SUSFS patch (skip for SukiSU to match known working workflows)
+  local apply_ksu_patch="true"
+  if [[ "$ROOT_METHOD" == "sukisu-ultra" ]]; then
+    apply_ksu_patch="false"
   fi
 
-  # Collect all kernel patch candidates
+  local ksu_patch=""
+  if [[ "$apply_ksu_patch" == "true" ]]; then
+    ksu_patch="$(find "$tmp" -type f -name '10_enable_susfs_for_ksu.patch' -print -quit 2>/dev/null || true)"
+    if [[ -z "$ksu_patch" ]]; then
+      echo "[susfs] ERROR: Could not find 10_enable_susfs_for_ksu.patch in SUSFS repo."
+      return 24
+    fi
+  fi
+
+  # Collect kernel patch candidates (supports names like 50_add_susfs_in_gki-android13-5.10.patch)
   local -a candidates=()
   while IFS= read -r -d '' f; do
     candidates+=( "$f" )
   done < <(find "$tmp" -type f -name '50_add_susfs*.patch' -print0 2>/dev/null || true)
 
   if (( ${#candidates[@]} == 0 )); then
-    echo "[susfs] ERROR: Could not find any kernel patch matching: 50_add_susfs*.patch"
+    echo "[susfs] ERROR: Could not find any kernel patch matching 50_add_susfs*.patch"
     return 23
   fi
 
@@ -406,32 +421,26 @@ apply_susfs() {
     lc="$(echo "$base" | tr '[:upper:]' '[:lower:]')"
     score=0
 
-    # Highest: exact ref substring match (handles names like ...in_gki-android13-5.10.patch)
+    # Best: exact ref substring match
     if [[ -n "$ref_lc" && "$lc" == *"$ref_lc"* ]]; then
       score=$((score + 1000))
     fi
 
-    # Kernel version match (5.10, 6.1 etc)
+    # Kernel version match (5.10, 6.1, ...)
     if [[ -n "$kver_lc" && "$lc" == *"$kver_lc"* ]]; then
       score=$((score + 200))
     fi
 
-    # Android token match (android12/13/14)
+    # Android token match (android12/13/14/...)
     if [[ -n "$and_lc" && "$lc" == *"$and_lc"* ]]; then
       score=$((score + 120))
     fi
 
-    # GKI hints
-    if [[ "$lc" == *"gki"* ]]; then
-      score=$((score + 30))
-    fi
+    # Hints
+    [[ "$lc" == *"gki"* ]] && score=$((score + 30))
+    [[ "$lc" == *"in_gki"* ]] && score=$((score + 15))
 
-    # Prefer "in_gki" over generic if otherwise similar
-    if [[ "$lc" == *"in_gki"* ]]; then
-      score=$((score + 15))
-    fi
-
-    # Slightly prefer shorter names if tie (more specific vs weird combos is ambiguous, but keeps stable)
+    # tiny tie-breaker: prefer slightly shorter
     score=$((score - ${#lc} / 50))
 
     if (( score > best_score )); then
@@ -447,15 +456,15 @@ apply_susfs() {
 
   echo "[susfs] KernelSU dir: $ksu_dir"
   echo "[susfs] Common dir:   $common_dir"
-  echo "[susfs] Detected kernel: ${kver:-unknown}  (ref=$susfs_ref  android=${and_token:-unknown})"
-  echo "[susfs] Using KernelSU patch: $(basename "$ksu_patch")"
+  echo "[susfs] Detected kernel: ${kver:-unknown} (ref=$susfs_ref  android=${and_token:-unknown})"
+  if [[ "$apply_ksu_patch" == "true" ]]; then
+    echo "[susfs] Using KernelSU patch: $(basename "$ksu_patch")"
+  else
+    echo "[susfs] ROOT_METHOD=sukisu-ultra -> skipping 10_enable_susfs_for_ksu.patch (expected)"
+  fi
   echo "[susfs] Using kernel patch:   $(basename "$best") (score=$best_score)"
-  echo "[susfs] Candidates were:"
-  for f in "${candidates[@]}"; do
-    echo "  - $(basename "$f")"
-  done
 
-  # Copy FS + include overlays (if present)
+  # Copy overlays (if present)
   if [[ -d "$tmp/kernel_patches/fs" ]]; then
     mkdir -p "$common_dir/fs"
     cp -af "$tmp/kernel_patches/fs/." "$common_dir/fs/"
@@ -465,18 +474,21 @@ apply_susfs() {
     cp -af "$tmp/kernel_patches/include/linux/." "$common_dir/include/linux/"
   fi
 
-  # Apply patches (do NOT copy patch files into kernel tree)
-  echo "[susfs] Applying KernelSU SUSFS patch..."
-  ( cd "$ksu_dir" && patch -p1 < "$ksu_patch" )
+  # Apply KernelSU patch (if enabled), non-interactive
+  if [[ "$apply_ksu_patch" == "true" ]]; then
+    echo "[susfs] Applying KernelSU SUSFS patch..."
+    ( cd "$ksu_dir" && patch -p1 --batch --forward --fuzz=3 < "$ksu_patch" )
+  fi
 
+  # Apply kernel/common patch, non-interactive
   echo "[susfs] Applying kernel SUSFS patch..."
-  ( cd "$common_dir" && patch -p1 < "$best" )
+  ( cd "$common_dir" && patch -p1 --batch --forward --fuzz=3 < "$best" )
 
   # Android 14+ tip from upstream docs: remove protected exports files if present
   rm -f "$common_dir/android/abi_gki_protected_exports_aarch64" \
         "$common_dir/android/abi_gki_protected_exports_x86_64" 2>/dev/null || true
 
-  # Enable configs (relies on ensure_kconfig defined in before.sh)
+  # Enable minimal config
   if declare -F ensure_kconfig >/dev/null 2>&1 && [[ -f "$defconfig_path" ]]; then
     ensure_kconfig CONFIG_KSU_SUSFS y "$defconfig_path"
   fi
