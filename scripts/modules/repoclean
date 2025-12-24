@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+: "${AUTO_CLEAN_REPOS:=true}"
+
+repoclean_top() {
+  local top="$1"
+  [[ "$AUTO_CLEAN_REPOS" == "true" ]] || return 0
+  [[ -d "$top/.repo" ]] || return 0
+
+  local list="$top/.repo/project.list"
+  [[ -f "$list" ]] || return 0
+
+  echo "[repoclean] Cleaning git working trees under: $top"
+
+  while IFS= read -r proj; do
+    [[ -n "$proj" ]] || continue
+    [[ -d "$top/$proj" ]] || continue
+    [[ -d "$top/$proj/.git" ]] || continue
+
+    git -C "$top/$proj" reset --hard >/dev/null 2>&1 || true
+    git -C "$top/$proj" clean -fdx   >/dev/null 2>&1 || true
+  done < "$list"
+}
+
+repoclean_all() {
+  [[ "$AUTO_CLEAN_REPOS" == "true" ]] || return 0
+  [[ -n "${SRC_DIR:-}" ]] || return 0
+  [[ -d "$SRC_DIR" ]] || return 0
+
+  # Your layout often looks like: $SRC_DIR/LINEAGE_23_0/.repo
+  while IFS= read -r -d '' repodir; do
+    repoclean_top "$(dirname "$repodir")"
+  done < <(find "$SRC_DIR" -maxdepth 3 -type d -name .repo -print0 2>/dev/null || true)
+}
