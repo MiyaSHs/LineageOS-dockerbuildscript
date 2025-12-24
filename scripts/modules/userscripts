@@ -42,15 +42,24 @@ fi
 
 : "${REPLACE_STOCK_FDROID:=false}"
 
-# Best-effort attempt to remove FDroid / PrivExt that came from vendor/partner_gms
 if [[ "$REPLACE_STOCK_FDROID" == "true" && -d "$TOP/vendor/partner_gms" ]]; then
-  echo "[before.sh] REPLACE_STOCK_FDROID=true -> attempting to remove stock FDroid + PrivExt from vendor/partner_gms (best-effort)."
+  echo "[before.sh] REPLACE_STOCK_FDROID=true -> removing stock FDroid modules + references (safe mode)."
 
+  # 1) Remove references from makefiles/xml, but DO NOT touch the module dirs themselves
   remove_from_partner_gms() {
     local token="$1"
     local files
-    files="$(grep -RIl --include='*.mk' --include='*.xml' "$token" "$TOP/vendor/partner_gms" 2>/dev/null || true)"
+
+    files="$(grep -RIl \
+      --include='*.mk' --include='*.xml' \
+      --exclude-dir='FDroid' \
+      --exclude-dir='F-Droid' \
+      --exclude-dir='FDroidPrivilegedExtension' \
+      --exclude-dir='F-DroidPrivilegedExtension' \
+      "$token" "$TOP/vendor/partner_gms" 2>/dev/null || true)"
+
     [[ -n "$files" ]] || return 0
+
     while IFS= read -r f; do
       sed -i \
         -e "s/[[:space:]]\\b${token}\\b[[:space:]]*/ /g" \
@@ -63,6 +72,15 @@ if [[ "$REPLACE_STOCK_FDROID" == "true" && -d "$TOP/vendor/partner_gms" ]]; then
   remove_from_partner_gms "FDroidPrivilegedExtension"
   remove_from_partner_gms "F-Droid"
   remove_from_partner_gms "F-DroidPrivilegedExtension"
+
+  # 2) Delete the module directories so Android.mk never gets parsed
+  rm -rf \
+    "$TOP/vendor/partner_gms/FDroid" \
+    "$TOP/vendor/partner_gms/F-Droid" \
+    "$TOP/vendor/partner_gms/FDroidPrivilegedExtension" \
+    "$TOP/vendor/partner_gms/F-DroidPrivilegedExtension"
+
+  echo "[before.sh] Stock FDroid directories removed."
 fi
 
 : "${ROOT_METHOD:=none}"
