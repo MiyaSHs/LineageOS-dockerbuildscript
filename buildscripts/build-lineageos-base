@@ -9,6 +9,7 @@ source "$PROJECT_DIR/scripts/modules/manifests"
 source "$PROJECT_DIR/scripts/modules/customapps"
 source "$PROJECT_DIR/scripts/modules/userscripts"
 source "$PROJECT_DIR/scripts/modules/docker"
+source "$PROJECT_DIR/scripts/modules/repoclean"
 
 check_deps
 require_var DEVICE_LIST
@@ -20,6 +21,13 @@ export ROOT_METHOD
 
 workdir_init "base"
 local_manifests_clear
+
+# Always cleanup on exit (even if docker/build fails)
+cleanup() { repoclean_all || true; }
+trap cleanup EXIT
+
+# Clean any leftovers from previous runs BEFORE starting container sync
+repoclean_all
 
 custom_apps_prepare
 userscripts_write_before_sh
