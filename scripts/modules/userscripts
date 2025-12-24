@@ -285,13 +285,13 @@ case "$ROOT_METHOD" in
     echo "[before.sh] Integrating KernelSU..."
     curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
     ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH" || true
     ;;
   kernelsu-next)
     echo "[before.sh] Integrating KernelSU Next..."
     curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
     ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH" || true
     ;;
   sukisu-ultra)
     echo "[before.sh] Integrating SukiSU Ultra..."
@@ -321,7 +321,7 @@ if [[ "$INTEGRATE_SUSFS" == "true" ]]; then
 fi
 EOF
 
-  # New helper file: susfs.sh (universal patch selection + SukiSU skip for KSU patch)
+  # Helper file: susfs.sh (universal patch selection + safe KSU patch handling)
   cat > "$USERSCRIPTS_DIR/susfs.sh" <<'EOF'
 #!/usr/bin/env bash
 set -eo pipefail
@@ -350,7 +350,7 @@ apply_susfs() {
   echo "[susfs] Cloning SUSFS repo: $SUSFS_REPO_URL (ref=$susfs_ref)"
   git clone --depth 1 --branch "$susfs_ref" "$SUSFS_REPO_URL" "$tmp"
 
-  # Find KernelSU dir (produced by root setup scripts)
+  # Find KernelSU dir produced by root setup scripts
   local ksu_dir=""
   ksu_dir="$(find "$kernel_dir" -maxdepth 4 -type d -name KernelSU -print -quit 2>/dev/null || true)"
   if [[ -z "$ksu_dir" ]]; then
@@ -381,18 +381,25 @@ apply_susfs() {
     and_token="${BASH_REMATCH[1]}"
   fi
 
-  # KernelSU SUSFS patch (skip for SukiSU to match known working workflows)
+  # Decide whether to apply KernelSU-side SUSFS patch
   local apply_ksu_patch="true"
   if [[ "$ROOT_METHOD" == "sukisu-ultra" ]]; then
     apply_ksu_patch="false"
   fi
 
+  # Find KernelSU SUSFS patch (if we plan to use it)
   local ksu_patch=""
   if [[ "$apply_ksu_patch" == "true" ]]; then
     ksu_patch="$(find "$tmp" -type f -name '10_enable_susfs_for_ksu.patch' -print -quit 2>/dev/null || true)"
     if [[ -z "$ksu_patch" ]]; then
-      echo "[susfs] ERROR: Could not find 10_enable_susfs_for_ksu.patch in SUSFS repo."
-      return 24
+      echo "[susfs] 10_enable_susfs_for_ksu.patch not found -> skipping KernelSU-side SUSFS patch"
+      apply_ksu_patch="false"
+    else
+      # Universal safety: dry-run first. If it doesn't apply, skip (prevents interactive prompts/reject spam).
+      if ! ( cd "$ksu_dir" && patch -p1 --dry-run --batch --forward --fuzz=3 < "$ksu_patch" >/dev/null 2>&1 ); then
+        echo "[susfs] KernelSU-side SUSFS patch does not apply cleanly for ROOT_METHOD=$ROOT_METHOD -> skipping it"
+        apply_ksu_patch="false"
+      fi
     fi
   fi
 
@@ -460,7 +467,7 @@ apply_susfs() {
   if [[ "$apply_ksu_patch" == "true" ]]; then
     echo "[susfs] Using KernelSU patch: $(basename "$ksu_patch")"
   else
-    echo "[susfs] ROOT_METHOD=sukisu-ultra -> skipping 10_enable_susfs_for_ksu.patch (expected)"
+    echo "[susfs] Skipping KernelSU-side patch (ROOT_METHOD=$ROOT_METHOD)"
   fi
   echo "[susfs] Using kernel patch:   $(basename "$best") (score=$best_score)"
 
