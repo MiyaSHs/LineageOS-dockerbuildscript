@@ -304,10 +304,16 @@ if [[ "$INTEGRATE_SUSFS" == "true" ]]; then
 fi
 EOF
 
-  # New helper file: susfs.sh (GitHub repo default)
+  # New helper file: susfs.sh (universal patch selection)
   cat > "$USERSCRIPTS_DIR/susfs.sh" <<'EOF'
 #!/usr/bin/env bash
 set -eo pipefail
+
+# Universal SUSFS patcher:
+# - clones SUSFS repo at SUSFS_REF
+# - applies KernelSU patch: kernel_patches/**/10_enable_susfs_for_ksu.patch (fixed path in most branches)
+# - applies the best matching kernel patch among: kernel_patches/**/50_add_susfs*.patch
+#   using a scoring heuristic based on SUSFS_REF, kernel version, android token, gki token.
 
 apply_susfs() {
   local kernel_dir="$1"
@@ -327,25 +333,25 @@ apply_susfs() {
 
   local tmp="/tmp/susfs4ksu.$$"
   rm -rf "$tmp"
+  trap 'rm -rf "$tmp" >/dev/null 2>&1 || true' RETURN
 
   echo "[susfs] Cloning SUSFS repo: $SUSFS_REPO_URL (ref=$susfs_ref)"
   git clone --depth 1 --branch "$susfs_ref" "$SUSFS_REPO_URL" "$tmp"
 
   # Find KernelSU dir produced by the root setup scripts
   local ksu_dir=""
-  ksu_dir="$(find "$kernel_dir" -maxdepth 3 -type d -name KernelSU -print -quit 2>/dev/null || true)"
+  ksu_dir="$(find "$kernel_dir" -maxdepth 4 -type d -name KernelSU -print -quit 2>/dev/null || true)"
   if [[ -z "$ksu_dir" ]]; then
     echo "[susfs] ERROR: Could not find KernelSU directory under: $kernel_dir"
     echo "[susfs] Did KernelSU/SukiSU integration run successfully?"
-    rm -rf "$tmp"
     return 22
   fi
 
-  # Choose common dir (GKI kernels often use kernel_root/common)
+  # Choose common dir (GKI kernels often use kernel_root/common). If missing, use kernel root.
   local common_dir="$kernel_dir/common"
   [[ -d "$common_dir" ]] || common_dir="$kernel_dir"
 
-  # Detect kernel version for selecting the right 50_add_susfs patch
+  # Detect kernel version for matching patch names (best effort)
   local kver="${SUSFS_KERNEL_VERSION}"
   if [[ -z "$kver" ]]; then
     if [[ "$susfs_ref" =~ ([0-9]+\.[0-9]+) ]]; then
@@ -361,52 +367,112 @@ apply_susfs() {
     fi
   fi
 
-  local kpatch=""
-  if [[ -n "$kver" && -f "$tmp/kernel_patches/50_add_susfs_in_kernel-${kver}.patch" ]]; then
-    kpatch="$tmp/kernel_patches/50_add_susfs_in_kernel-${kver}.patch"
-  else
-    kpatch="$(ls -1 "$tmp"/kernel_patches/50_add_susfs_in_kernel-*.patch 2>/dev/null | head -n1 || true)"
+  # Extract android token from ref (android12/android13/android14/...)
+  local and_token=""
+  if [[ "$susfs_ref" =~ (android[0-9]+) ]]; then
+    and_token="${BASH_REMATCH[1]}"
   fi
 
-  if [[ -z "$kpatch" ]]; then
-    echo "[susfs] ERROR: Could not find kernel_patches/50_add_susfs_in_kernel-*.patch in SUSFS repo."
-    echo "[susfs] NOTE: This assumes the repo layout includes kernel_patches/ like the upstream docs."
-    rm -rf "$tmp"
-    return 23
-  fi
-
-  if [[ ! -f "$tmp/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" ]]; then
-    echo "[susfs] ERROR: Missing KernelSU patch: kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-    rm -rf "$tmp"
+  # Locate the KernelSU enable patch (keep robust: search by filename)
+  local ksu_patch=""
+  ksu_patch="$(find "$tmp" -type f -name '10_enable_susfs_for_ksu.patch' -print -quit 2>/dev/null || true)"
+  if [[ -z "$ksu_patch" ]]; then
+    echo "[susfs] ERROR: Could not find 10_enable_susfs_for_ksu.patch in SUSFS repo."
     return 24
   fi
 
-  echo "[susfs] Using kernel patch: $(basename "$kpatch") (detected kernel=${kver:-unknown})"
+  # Collect all kernel patch candidates
+  local -a candidates=()
+  while IFS= read -r -d '' f; do
+    candidates+=( "$f" )
+  done < <(find "$tmp" -type f -name '50_add_susfs*.patch' -print0 2>/dev/null || true)
+
+  if (( ${#candidates[@]} == 0 )); then
+    echo "[susfs] ERROR: Could not find any kernel patch matching: 50_add_susfs*.patch"
+    return 23
+  fi
+
+  # Pick best kernel patch by scoring
+  local ref_lc kver_lc and_lc
+  ref_lc="$(echo "$susfs_ref" | tr '[:upper:]' '[:lower:]')"
+  kver_lc="$(echo "${kver:-}" | tr '[:upper:]' '[:lower:]')"
+  and_lc="$(echo "${and_token:-}" | tr '[:upper:]' '[:lower:]')"
+
+  local best="" best_score=-1
+
+  for f in "${candidates[@]}"; do
+    local base lc score
+    base="$(basename "$f")"
+    lc="$(echo "$base" | tr '[:upper:]' '[:lower:]')"
+    score=0
+
+    # Highest: exact ref substring match (handles names like ...in_gki-android13-5.10.patch)
+    if [[ -n "$ref_lc" && "$lc" == *"$ref_lc"* ]]; then
+      score=$((score + 1000))
+    fi
+
+    # Kernel version match (5.10, 6.1 etc)
+    if [[ -n "$kver_lc" && "$lc" == *"$kver_lc"* ]]; then
+      score=$((score + 200))
+    fi
+
+    # Android token match (android12/13/14)
+    if [[ -n "$and_lc" && "$lc" == *"$and_lc"* ]]; then
+      score=$((score + 120))
+    fi
+
+    # GKI hints
+    if [[ "$lc" == *"gki"* ]]; then
+      score=$((score + 30))
+    fi
+
+    # Prefer "in_gki" over generic if otherwise similar
+    if [[ "$lc" == *"in_gki"* ]]; then
+      score=$((score + 15))
+    fi
+
+    # Slightly prefer shorter names if tie (more specific vs weird combos is ambiguous, but keeps stable)
+    score=$((score - ${#lc} / 50))
+
+    if (( score > best_score )); then
+      best_score=$score
+      best="$f"
+    fi
+  done
+
+  if [[ -z "$best" ]]; then
+    echo "[susfs] ERROR: Failed to choose a SUSFS kernel patch."
+    return 25
+  fi
+
   echo "[susfs] KernelSU dir: $ksu_dir"
   echo "[susfs] Common dir:   $common_dir"
+  echo "[susfs] Detected kernel: ${kver:-unknown}  (ref=$susfs_ref  android=${and_token:-unknown})"
+  echo "[susfs] Using KernelSU patch: $(basename "$ksu_patch")"
+  echo "[susfs] Using kernel patch:   $(basename "$best") (score=$best_score)"
+  echo "[susfs] Candidates were:"
+  for f in "${candidates[@]}"; do
+    echo "  - $(basename "$f")"
+  done
 
-  # Copy patches/files into place
-  cp -f "$tmp/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" "$ksu_dir/"
-  cp -f "$kpatch" "$common_dir/"
-
-  mkdir -p "$common_dir/fs" "$common_dir/include/linux"
+  # Copy FS + include overlays (if present)
   if [[ -d "$tmp/kernel_patches/fs" ]]; then
+    mkdir -p "$common_dir/fs"
     cp -af "$tmp/kernel_patches/fs/." "$common_dir/fs/"
   fi
   if [[ -d "$tmp/kernel_patches/include/linux" ]]; then
+    mkdir -p "$common_dir/include/linux"
     cp -af "$tmp/kernel_patches/include/linux/." "$common_dir/include/linux/"
   fi
 
-  # Apply patches
-  echo "[susfs] Patching KernelSU..."
-  ( cd "$ksu_dir" && patch -p1 < 10_enable_susfs_for_ksu.patch )
+  # Apply patches (do NOT copy patch files into kernel tree)
+  echo "[susfs] Applying KernelSU SUSFS patch..."
+  ( cd "$ksu_dir" && patch -p1 < "$ksu_patch" )
 
-  local kp_name
-  kp_name="$(basename "$kpatch")"
-  echo "[susfs] Patching kernel common..."
-  ( cd "$common_dir" && patch -p1 < "$kp_name" )
+  echo "[susfs] Applying kernel SUSFS patch..."
+  ( cd "$common_dir" && patch -p1 < "$best" )
 
-  # A14+ tip from upstream docs: remove protected exports file if present
+  # Android 14+ tip from upstream docs: remove protected exports files if present
   rm -f "$common_dir/android/abi_gki_protected_exports_aarch64" \
         "$common_dir/android/abi_gki_protected_exports_x86_64" 2>/dev/null || true
 
@@ -414,8 +480,6 @@ apply_susfs() {
   if declare -F ensure_kconfig >/dev/null 2>&1 && [[ -f "$defconfig_path" ]]; then
     ensure_kconfig CONFIG_KSU_SUSFS y "$defconfig_path"
   fi
-
-  rm -rf "$tmp"
 }
 EOF
 
