@@ -22,11 +22,7 @@ export ROOT_METHOD
 workdir_init "base"
 local_manifests_clear
 
-# Kernel-only cleanup on exit (even if docker/build fails)
-cleanup() { repoclean_kernel_all || true; }
-trap cleanup EXIT
-
-# Kernel-only cleanup BEFORE starting container sync
+# Purge kernel folder BEFORE the container does repo sync
 repoclean_kernel_all
 
 custom_apps_prepare
