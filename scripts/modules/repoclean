@@ -1,91 +1,37 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-# Kernel-only cleaner.
-# This is device-independent: it cleans/removes any repo project whose path begins with "kernel/".
+# Kernel purge only.
+# Purpose: prevent repo sync from failing with:
+#   "Cannot remove project: uncommitted changes are present"
+# by removing the entire kernel/ directory before repo sync.
 #
-# Modes:
-#   KERNEL_CLEAN_MODE=reset  -> git reset --hard + git clean -fdx (fast, no redownload)
-#   KERNEL_CLEAN_MODE=remove -> rm -rf worktree dir(s) under kernel/ (repo will recreate if needed)
+# Device-independent: does NOT assume sm8450 or any vendor path.
 #
-# Optional:
-#   KERNEL_PURGE_META=true   -> ALSO remove .repo/projects + .repo/project-objects for kernel projects
-#                               (forces redownload; default false)
-: "${KERNEL_CLEAN_MODE:=reset}"
-: "${KERNEL_PURGE_META:=false}"
-
-_is_git_tree() {
-  local dir="$1"
-  [[ -d "$dir" ]] || return 1
-  git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1
-}
-
-_kernel_projects_from_list() {
-  local top="$1"
-  local list="$top/.repo/project.list"
-  [[ -f "$list" ]] || return 0
-  # Only kernel projects; device-independent.
-  grep -E '^kernel/' "$list" || true
-}
-
-_clean_kernel_project_reset() {
-  local top="$1"
-  local proj="$2"
-  local dir="$top/$proj"
-
-  [[ -d "$dir" ]] || return 0
-  _is_git_tree "$dir" || return 0
-
-  # Hard clean
-  git -C "$dir" reset --hard >/dev/null 2>&1 || true
-  git -C "$dir" clean -fdx   >/dev/null 2>&1 || true
-}
-
-_clean_kernel_project_remove() {
-  local top="$1"
-  local proj="$2"
-  local dir="$top/$proj"
-
-  # Remove worktree dir (whether it's git or not) so repo won't complain about "uncommitted changes"
-  if [[ -d "$dir" ]]; then
-    rm -rf "$dir"
-  fi
-
-  # Optional: purge repo metadata too (forces redownload if project comes back later)
-  if [[ "$KERNEL_PURGE_META" == "true" ]]; then
-    rm -rf "$top/.repo/projects/$proj.git" || true
-    rm -rf "$top/.repo/project-objects/$proj.git" || true
-  fi
-}
+# Toggle:
+#   KERNEL_PURGE_BEFORE_SYNC=true|false  (default true)
+: "${KERNEL_PURGE_BEFORE_SYNC:=true}"
 
 repoclean_kernel_top() {
   local top="$1"
-  [[ -d "$top/.repo" ]] || return 0
+  [[ "$KERNEL_PURGE_BEFORE_SYNC" == "true" ]] || return 0
+  [[ -n "$top" && -d "$top/.repo" ]] || return 0
+  [[ "$top" != "/" ]] || return 0
 
-  local projs
-  projs="$(_kernel_projects_from_list "$top")"
-  [[ -n "$projs" ]] || return 0
+  local kdir="$top/kernel"
 
-  echo "[repoclean] Kernel-only cleanup under: $top (mode=$KERNEL_CLEAN_MODE)"
-
-  while IFS= read -r proj; do
-    [[ -n "$proj" ]] || continue
-    case "$KERNEL_CLEAN_MODE" in
-      reset)  _clean_kernel_project_reset  "$top" "$proj" ;;
-      remove) _clean_kernel_project_remove "$top" "$proj" ;;
-      *)
-        echo "[repoclean] ERROR: Unknown KERNEL_CLEAN_MODE='$KERNEL_CLEAN_MODE' (use reset|remove)"
-        return 2
-        ;;
-    esac
-  done <<<"$projs"
+  # Only remove a real directory (not a symlink) to avoid surprises
+  if [[ -d "$kdir" && ! -L "$kdir" ]]; then
+    echo "[kernelpurge] Removing kernel directory: $kdir"
+    rm -rf "$kdir"
+  fi
 }
 
 repoclean_kernel_all() {
-  [[ -n "${SRC_DIR:-}" ]] || return 0
-  [[ -d "$SRC_DIR" ]] || return 0
+  [[ "$KERNEL_PURGE_BEFORE_SYNC" == "true" ]] || return 0
+  [[ -n "${SRC_DIR:-}" && -d "${SRC_DIR:-}" ]] || return 0
 
-  # Layout often looks like: $SRC_DIR/LINEAGE_23_0/.repo
+  # Find each repo checkout (directory that contains .repo) under SRC_DIR
   while IFS= read -r -d '' repodir; do
     repoclean_kernel_top "$(dirname "$repodir")"
   done < <(find "$SRC_DIR" -maxdepth 3 -type d -name .repo -print0 2>/dev/null || true)
