@@ -77,7 +77,7 @@ custom_apps_prompt() {
       echo "Paste one spec (examples):"
       echo "  gh:NeoApplications/Neo-Store|name=NeoStore|asset='.*\\.apk$'"
       echo "  gh:SomeOrg/SomeApp|asset='.*\\.zip$'|unzip=true|apk='universal.*\\.apk$'"
-      echo "  gha:SomeOrg/SomeRepo|workflow=build.yml|branch=main|artifact=manager|unzip=true|apk='.*\\.apk$'"
+      echo "  gha:SomeOrg/SomeRepo|workflow=build.yml|branch=main|artifact=manager|name=Manager|apk='.*\\.apk$'"
       echo "  fdroid:dev.imranr.obtainium|name=Obtainium"
       echo "  url:https://example.com/app.apk|name=MyApp|privileged=true"
       echo "  url:https://nightly.link/Org/Repo/workflows/build.yml/main/manager.zip|name=Manager|unzip=true"
@@ -117,22 +117,24 @@ custom_apps_prepare() {
   rm -rf "$CUSTOM_APPS_PAYLOAD_DIR"
   mkdir -p "$CUSTOM_APPS_PAYLOAD_DIR/vendor/custom_apps" "$CUSTOM_APPS_DIR/cache"
 
+  export CUSTOM_APPS_FILE
+  export CUSTOM_APPS_PAYLOAD_DIR
+
   # Use python (no extra deps) to:
   # - parse specs
-  # - download latest APKs from GitHub releases / GitHub Actions (nightly.link) / F-Droid / direct URLs
-  # - unzip artifacts when requested
+  # - download apps from GitHub releases / GitHub Actions (nightly.link) / F-Droid / direct URLs
+  # - unzip artifacts when requested (only for .zip files)
   # - generate vendor/custom_apps/Android.bp
   python3 - <<'PY'
-import os, re, json, urllib.request, urllib.parse, sys, io, zipfile
+import os, re, json, urllib.request, urllib.parse, zipfile
 from pathlib import Path
 
 apps_file = Path(os.environ["CUSTOM_APPS_FILE"])
 payload = Path(os.environ["CUSTOM_APPS_PAYLOAD_DIR"])
-cache = (payload.parent / "cache")
-cache.mkdir(parents=True, exist_ok=True)
+(android_bp_dir := payload / "vendor" / "custom_apps").mkdir(parents=True, exist_ok=True)
 
-android_bp = payload / "vendor" / "custom_apps" / "Android.bp"
-apps_dir   = payload / "vendor" / "custom_apps" / "apps"
+android_bp = android_bp_dir / "Android.bp"
+apps_dir   = android_bp_dir / "apps"
 apps_dir.mkdir(parents=True, exist_ok=True)
 
 def http_get(url, headers=None):
@@ -140,14 +142,14 @@ def http_get(url, headers=None):
     with urllib.request.urlopen(req, timeout=60) as r:
         return r.read()
 
-def dl(url, out):
+def dl(url, out: Path):
     out.parent.mkdir(parents=True, exist_ok=True)
-    data = http_get(url, headers={"User-Agent":"custom-apps-fetcher"})
+    data = http_get(url, headers={"User-Agent": "custom-apps-fetcher"})
     tmp = out.with_suffix(out.suffix + ".tmp")
     tmp.write_bytes(data)
     tmp.replace(out)
 
-def sanitize_module(name):
+def sanitize_module(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "CustomApp"
 
 def parse_kv(parts):
@@ -157,26 +159,20 @@ def parse_kv(parts):
         if not p:
             continue
         if "=" in p:
-            k,v = p.split("=",1)
+            k, v = p.split("=", 1)
             kv[k.strip().lower()] = v.strip().strip('"').strip("'")
     return kv
 
 def truthy(v):
-    return str(v or "").strip().lower() in ("1","true","yes","y","on")
+    return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
-def looks_like_zip(p: Path) -> bool:
-    if p.suffix.lower() == ".zip":
-        return True
-    try:
-        b = p.read_bytes()[:4]
-        return b[:2] == b"PK"
-    except Exception:
-        return False
+def is_zip_archive(p: Path) -> bool:
+    # ONLY treat real .zip files as unzip targets.
+    # DO NOT treat .apk as zip (APKs are zip containers).
+    return p.suffix.lower() == ".zip" or p.name.lower().endswith(".zip")
 
 def extract_apk_from_zip(zip_path: Path, out_dir: Path, inner_regex: str | None = None) -> Path:
-    # Extract one APK from a zip into out_dir, return extracted apk path.
     out_dir.mkdir(parents=True, exist_ok=True)
-
     with zipfile.ZipFile(zip_path, "r") as z:
         names = [n for n in z.namelist() if n and not n.endswith("/") and n.lower().endswith(".apk")]
         if not names:
@@ -210,13 +206,13 @@ def extract_apk_from_zip(zip_path: Path, out_dir: Path, inner_regex: str | None 
 
 def pick_github_asset(owner_repo, asset_regex=None, allow_zip=False):
     api = f"https://api.github.com/repos/{owner_repo}/releases/latest"
-    j = json.loads(http_get(api, headers={"User-Agent":"custom-apps-fetcher"}).decode("utf-8"))
+    j = json.loads(http_get(api, headers={"User-Agent": "custom-apps-fetcher"}).decode("utf-8"))
     assets = j.get("assets", [])
 
     candidates = []
     for a in assets:
-        name = a.get("name","")
-        url  = a.get("browser_download_url","")
+        name = a.get("name", "")
+        url  = a.get("browser_download_url", "")
         if not name or not url:
             continue
         low = name.lower()
@@ -229,27 +225,26 @@ def pick_github_asset(owner_repo, asset_regex=None, allow_zip=False):
 
     if asset_regex:
         rx = re.compile(asset_regex)
-        for name,url in candidates:
+        for name, url in candidates:
             if rx.search(name):
                 return name, url
 
     # Prefer apk unless user explicitly needs zip-only
-    apks = [(n,u) for (n,u) in candidates if n.lower().endswith(".apk")]
-    zips = [(n,u) for (n,u) in candidates if n.lower().endswith(".zip")]
+    apks = [(n, u) for (n, u) in candidates if n.lower().endswith(".apk")]
+    zips = [(n, u) for (n, u) in candidates if n.lower().endswith(".zip")]
 
     if apks:
-        for key in ["universal", "all", "release"]:
-            for name,url in apks:
+        for key in ("universal", "all", "release"):
+            for name, url in apks:
                 if key in name.lower():
                     return name, url
         return apks[0]
 
-    # zip-only case
     return zips[0]
 
 def pick_fdroid_apk(package_name):
     page = f"https://f-droid.org/packages/{package_name}/"
-    html = http_get(page, headers={"User-Agent":"custom-apps-fetcher"}).decode("utf-8", errors="ignore")
+    html = http_get(page, headers={"User-Agent": "custom-apps-fetcher"}).decode("utf-8", errors="ignore")
     m = re.search(r'href="(https://f-droid\.org/repo/[^"]+\.apk)"', html)
     if not m:
         m = re.search(r'href="(/repo/[^"]+\.apk)"', html)
@@ -271,8 +266,7 @@ def nightly_link_url(owner_repo: str, workflow_file: str, branch: str, artifact:
 
 modules = []
 
-lines = apps_file.read_text(encoding="utf-8", errors="ignore").splitlines()
-for raw in lines:
+for raw in apps_file.read_text(encoding="utf-8", errors="ignore").splitlines():
     line = raw.strip()
     if not line or line.startswith("#"):
         continue
@@ -281,35 +275,35 @@ for raw in lines:
     spec = parts[0]
     kv = parse_kv(parts[1:])
 
-    privileged = truthy(kv.get("privileged","false"))
-    cert = (kv.get("cert","presigned") or "presigned").lower()  # presigned | platform
-    unzip = truthy(kv.get("unzip","false")) or truthy(kv.get("zip","false"))
-    inner_apk_rx = kv.get("apk")  # regex for apk inside zip
+    privileged = truthy(kv.get("privileged", "false"))
+    cert = (kv.get("cert", "presigned") or "presigned").lower()  # presigned | platform
 
-    # Determine module name default
-    default_name = None
-    if spec.startswith("gh:") or spec.startswith("gha:"):
-        default_name = spec.split(":",1)[1].split("/",1)[-1]
+    unzip = truthy(kv.get("unzip", "false")) or truthy(kv.get("zip", "false"))
+    inner_apk_rx = kv.get("apk")  # regex for apk inside zip
+    asset_rx = kv.get("asset")
+
+    # Default module name
+    if spec.startswith(("gh:", "gha:")):
+        default_name = spec.split(":", 1)[1].split("/", 1)[-1]
     elif spec.startswith("fdroid:"):
-        default_name = spec.split(":",1)[1].split(".")[-1]
+        default_name = spec.split(":", 1)[1].split(".")[-1]
     elif spec.startswith("url:"):
-        default_name = Path(urllib.parse.urlparse(spec.split(":",1)[1]).path).stem
+        default_name = Path(urllib.parse.urlparse(spec.split(":", 1)[1]).path).stem or "CustomApp"
     else:
         default_name = spec.split(".")[-1]
 
     modname = sanitize_module(kv.get("name") or default_name)
 
-    # Download target (may be apk or zip)
-    out_file = None
+    # Download (apk or zip)
+    out_file: Path
     if spec.startswith("gh:"):
-        owner_repo = spec.split(":",1)[1]
-        asset_rx = kv.get("asset")
-        asset_name, url = pick_github_asset(owner_repo, asset_regex=asset_rx, allow_zip=unzip)
+        owner_repo = spec.split(":", 1)[1]
+        asset_name, url = pick_github_asset(owner_repo, asset_regex=asset_rx, allow_zip=True)
         out_file = apps_dir / modname / asset_name
         dl(url, out_file)
 
     elif spec.startswith("gha:"):
-        owner_repo = spec.split(":",1)[1]
+        owner_repo = spec.split(":", 1)[1]
         workflow = kv.get("workflow") or kv.get("wf") or ""
         branch = kv.get("branch") or "main"
         artifact = kv.get("artifact") or kv.get("art") or ""
@@ -321,26 +315,32 @@ for raw in lines:
         unzip = True  # gha implies zip
 
     elif spec.startswith("url:"):
-        url = spec.split(":",1)[1]
+        url = spec.split(":", 1)[1]
         name = Path(urllib.parse.urlparse(url).path).name or f"{modname}.apk"
         out_file = apps_dir / modname / name
         dl(url, out_file)
 
     else:
-        pkg = spec.split(":",1)[1] if spec.startswith("fdroid:") else spec
+        # Treat as fdroid (either "fdroid:pkg" or "pkg")
+        pkg = spec.split(":", 1)[1] if spec.startswith("fdroid:") else spec
         _, url = pick_fdroid_apk(pkg)
         out_file = apps_dir / modname / f"{pkg}.apk"
         dl(url, out_file)
 
-    # If it's a zip (or user requested unzip), extract an apk and use that for Android.bp
+    # Decide whether to unzip
     out_apk = out_file
-    if unzip or looks_like_zip(out_file):
-        if looks_like_zip(out_file):
+    if unzip:
+        if is_zip_archive(out_file):
             out_apk = extract_apk_from_zip(out_file, out_file.parent, inner_regex=inner_apk_rx)
         else:
-            # unzip requested but file isn't zip -> keep as is
+            # unzip requested but not a .zip -> keep as-is
             out_apk = out_file
+    else:
+        # Auto-unzip ONLY if the downloaded file is actually a .zip
+        if is_zip_archive(out_file):
+            out_apk = extract_apk_from_zip(out_file, out_file.parent, inner_regex=inner_apk_rx)
 
+    # Build Android.bp snippet
     rel_apk = out_apk.relative_to(payload / "vendor" / "custom_apps")
 
     if cert == "platform":
@@ -351,27 +351,27 @@ for raw in lines:
         presigned_line = "    presigned: true,\n"
 
     snippet = (
-f'android_app_import {{\n'
-f'    name: "{modname}",\n'
-f'    apk: "{rel_apk.as_posix()}",\n'
-f'{presigned_line}'
-f'{cert_line}'
-f'    privileged: {"true" if privileged else "false"},\n'
-f'    dex_preopt: {{ enabled: false }},\n'
-f'}}\n'
+        f'android_app_import {{\n'
+        f'    name: "{modname}",\n'
+        f'    apk: "{rel_apk.as_posix()}",\n'
+        f'{presigned_line}'
+        f'{cert_line}'
+        f'    privileged: {"true" if privileged else "false"},\n'
+        f'    dex_preopt: {{ enabled: false }},\n'
+        f'}}\n'
     )
 
     modules.append((modname, snippet))
 
-with android_bp.open("w", encoding="utf-8") as f:
-    f.write('// Auto-generated. Do not edit by hand.\n\n')
-    for _, snip in modules:
-        f.write(snip + "\n")
+android_bp.write_text(
+    "// Auto-generated. Do not edit by hand.\n\n" + "\n".join(s for _, s in modules) + "\n",
+    encoding="utf-8"
+)
 
-print(" ".join([m for m,_ in modules]))
+print(" ".join([m for m, _ in modules]))
 PY
 
-  # Extract module names from Android.bp (simple + reliable)
+  # Extract module names from Android.bp
   CUSTOM_PACKAGES="$(python3 - <<'PY'
 import os
 from pathlib import Path
@@ -385,9 +385,7 @@ for line in txt.splitlines():
 print(" ".join(names))
 PY
 )"
-
   export CUSTOM_PACKAGES
-  export CUSTOM_APPS_PAYLOAD_DIR
 
   echo
   echo "Custom apps prepared. Modules:"
