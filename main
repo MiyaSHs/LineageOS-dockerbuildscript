@@ -5,17 +5,16 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "$SCRIPT_DIR/VARIABLES" ]]; then
-  # Exporta automaticamente tudo que vier do VARIABLES
+  # auto-export everything from VARIABLES
   set -a
   source "$SCRIPT_DIR/VARIABLES"
   set +a
 fi
 
-# --- GUARDA-CHUVA: sempre setar e exportar o payload dir ---
+# Always set/export the payload dir
 : "${CUSTOM_APPS_PAYLOAD_DIR:="$SCRIPT_DIR/custom_apps_payload"}"
 export CUSTOM_APPS_PAYLOAD_DIR
 mkdir -p "$CUSTOM_APPS_PAYLOAD_DIR"
-
 
 source "$PROJECT_DIR/scripts/bootstrap"
 source "$PROJECT_DIR/scripts/ui"
@@ -67,6 +66,18 @@ save_variables() {
     echo '# Try to remove FDroid + PrivExt from vendor/partner_gms (microG builds only): true | false'
     printf 'REPLACE_STOCK_FDROID=%q\n' "$REPLACE_STOCK_FDROID"
     echo
+    echo '# Root integration: none | kernelsu | kernelsu-next | sukisu-ultra'
+    printf 'ROOT_METHOD=%q\n' "$ROOT_METHOD"
+    echo
+    echo '# SUSFS integration (experimental): true | false'
+    printf 'INTEGRATE_SUSFS=%q\n' "$INTEGRATE_SUSFS"
+    echo
+    echo '# SUSFS ref (branch/tag), e.g. gki-android13-5.10'
+    printf 'SUSFS_REF=%q\n' "$SUSFS_REF"
+    echo
+    echo '# Optional override (leave empty normally): e.g. 5.10, 6.1'
+    printf 'SUSFS_KERNEL_VERSION=%q\n' "${SUSFS_KERNEL_VERSION:-}"
+    echo
     echo '# Optional (ignored if unsupported by container)'
     printf 'ZIP_UP_IMAGES=%q\n' "$ZIP_UP_IMAGES"
     printf 'LOCAL_MIRROR=%q\n' "$LOCAL_MIRROR"
@@ -100,7 +111,7 @@ main() {
 
   prompt_choice BUILD_FLAVOR "Build flavor:" "base" "microg"
 
-  # Store selection (separate from custom apps UI)
+  # Store selection
   prompt_choice STORE_CLIENT "Store client (system app):" "none" "fdroid" "droidify" "neostore"
   prompt_choice ADD_AURORA_STORE "Add Aurora Store (system app)?" "false" "true"
 
@@ -111,16 +122,32 @@ main() {
     REPLACE_STOCK_FDROID="false"
   fi
 
-  # Apply store choices into CUSTOM_APPS (auto block), then optionally let user edit/add extras
+  # Apply store choices into CUSTOM_APPS, then optionally let user edit/add extras
   stores_apply "$BUILD_FLAVOR"
   custom_apps_prompt
 
   prompt_choice ROOT_METHOD "Root method:" "none" "kernelsu" "kernelsu-next" "sukisu-ultra"
 
+  # SUSFS prompt (only meaningful if we’re integrating KernelSU/SukiSU)
+  if [[ "$ROOT_METHOD" == "none" ]]; then
+    INTEGRATE_SUSFS="false"
+    SUSFS_REF=""
+  else
+    prompt_choice INTEGRATE_SUSFS "Integrate SUSFS? (experimental kernel patching)" "false" "true"
+    if [[ "$INTEGRATE_SUSFS" == "true" ]]; then
+      prompt_nonempty SUSFS_REF "SUSFS ref (branch/tag, e.g. gki-android13-5.10)" "$SUSFS_REF"
+    else
+      SUSFS_REF=""
+    fi
+  fi
+
   save_variables
 
   export_config
   export ROOT_METHOD
+  export INTEGRATE_SUSFS
+  export SUSFS_REF
+  export SUSFS_KERNEL_VERSION
 
   case "$BUILD_FLAVOR" in
     base)   exec bash "$PROJECT_DIR/buildscripts/build-lineageos-base" ;;
