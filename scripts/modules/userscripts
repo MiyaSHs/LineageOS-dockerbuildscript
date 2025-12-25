@@ -380,7 +380,7 @@ case "$ROOT_METHOD" in
     ensure_kconfig CONFIG_KPM y "$DEFCONFIG_PATH"
 
     # Apply SukiSU_patch patches (this fixes syscall-hook build failures)
-    apply_sukisu_patchset
+    #apply_sukisu_patchset
     ;;
   *)
     echo "[before.sh] Unknown ROOT_METHOD='$ROOT_METHOD'"
