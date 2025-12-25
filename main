@@ -69,15 +69,6 @@ save_variables() {
     echo '# Root integration: none | kernelsu | kernelsu-next | sukisu-ultra'
     printf 'ROOT_METHOD=%q\n' "$ROOT_METHOD"
     echo
-    echo '# SUSFS integration (experimental): true | false'
-    printf 'INTEGRATE_SUSFS=%q\n' "$INTEGRATE_SUSFS"
-    echo
-    echo '# SUSFS ref (branch/tag), e.g. gki-android13-5.10'
-    printf 'SUSFS_REF=%q\n' "$SUSFS_REF"
-    echo
-    echo '# Optional override (leave empty normally): e.g. 5.10, 6.1'
-    printf 'SUSFS_KERNEL_VERSION=%q\n' "${SUSFS_KERNEL_VERSION:-}"
-    echo
     echo '# Optional (ignored if unsupported by container)'
     printf 'ZIP_UP_IMAGES=%q\n' "$ZIP_UP_IMAGES"
     printf 'LOCAL_MIRROR=%q\n' "$LOCAL_MIRROR"
@@ -128,26 +119,10 @@ main() {
 
   prompt_choice ROOT_METHOD "Root method:" "none" "kernelsu" "kernelsu-next" "sukisu-ultra"
 
-  # SUSFS prompt (only meaningful if we’re integrating KernelSU/SukiSU)
-  if [[ "$ROOT_METHOD" == "none" ]]; then
-    INTEGRATE_SUSFS="false"
-    SUSFS_REF=""
-  else
-    prompt_choice INTEGRATE_SUSFS "Integrate SUSFS? (experimental kernel patching)" "false" "true"
-    if [[ "$INTEGRATE_SUSFS" == "true" ]]; then
-      prompt_nonempty SUSFS_REF "SUSFS ref (branch/tag, e.g. gki-android13-5.10)" "$SUSFS_REF"
-    else
-      SUSFS_REF=""
-    fi
-  fi
-
   save_variables
 
   export_config
   export ROOT_METHOD
-  export INTEGRATE_SUSFS
-  export SUSFS_REF
-  export SUSFS_KERNEL_VERSION
 
   case "$BUILD_FLAVOR" in
     base)   exec bash "$PROJECT_DIR/buildscripts/build-lineageos-base" ;;
