@@ -363,7 +363,7 @@ case "$ROOT_METHOD" in
     ;;
   kernelsu-next)
     echo "[before.sh] Integrating KernelSU Next..."
-    curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+    curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s dev
     ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
     ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH" || true
     ;;
