@@ -88,11 +88,6 @@ fi
 : "${DEVICE_LIST:=}"
 : "${PARALLEL_JOBS:=4}"
 
-: "${INTEGRATE_SUSFS:=false}"
-: "${SUSFS_REF:=}"
-: "${SUSFS_KERNEL_VERSION:=}"
-: "${SUSFS_REPO_URL:=https://github.com/ShirkNeko/susfs4ksu.git}"
-
 # SukiSU patchset (best-effort)
 : "${SUKISU_PATCH_REPO_URL:=https://github.com/SukiSU-Ultra/SukiSU_patch.git}"
 : "${SUKISU_APPLY_PATCHSET:=true}"
@@ -165,9 +160,6 @@ echo "[before.sh] Kernel dir:    $KERNEL_DIR"
 echo "[before.sh] Defconfig:     $DEFCONFIG_PATH"
 echo "[before.sh] Opt profile:   $KERNEL_OPT_PROFILE"
 echo "[before.sh] Root method:   $ROOT_METHOD"
-echo "[before.sh] SUSFS enabled: $INTEGRATE_SUSFS"
-echo "[before.sh] SUSFS ref:     $SUSFS_REF"
-echo "[before.sh] SUSFS repo:    $SUSFS_REPO_URL"
 
 cd "$KERNEL_DIR"
 
@@ -379,6 +371,13 @@ case "$ROOT_METHOD" in
     echo "[before.sh] Integrating SukiSU Ultra..."
     curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
     ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KSU_SYSCALL_HOOK y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KRETPROBES y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_HAVE_SYSCALL_TRACEPOINTS y "$DEFCONFIG_PATH"
+
+    ensure_kconfig CONFIG_KALLSYMS y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KPM y "$DEFCONFIG_PATH"
 
     # Apply SukiSU_patch patches (this fixes syscall-hook build failures)
     apply_sukisu_patchset
@@ -390,209 +389,9 @@ case "$ROOT_METHOD" in
 esac
 
 echo "[before.sh] Root integration done: $ROOT_METHOD"
-
-# ---- SUSFS integration (optional) ----
-if [[ "$INTEGRATE_SUSFS" == "true" ]]; then
-  if [[ -z "$SUSFS_REF" ]]; then
-    echo "[before.sh] INTEGRATE_SUSFS=true but SUSFS_REF is empty -> skipping SUSFS."
-  else
-    echo "[before.sh] Integrating SUSFS (ref=$SUSFS_REF)..."
-    # shellcheck disable=SC1091
-    source /srv/userscripts/susfs.sh
-    apply_susfs "$KERNEL_DIR" "$DEFCONFIG_PATH" "$SUSFS_REF"
-    echo "[before.sh] SUSFS integration done."
-  fi
-fi
-EOF
-
-  # Helper file: susfs.sh (universal patch selection + safe/atomic application)
-  cat > "$USERSCRIPTS_DIR/susfs.sh" <<'EOF'
-#!/usr/bin/env bash
-set -eo pipefail
-
-apply_susfs() {
-  local kernel_dir="$1"
-  local defconfig_path="$2"
-  local susfs_ref="$3"
-
-  : "${SUSFS_REPO_URL:=https://github.com/ShirkNeko/susfs4ksu.git}"
-  : "${SUSFS_KERNEL_VERSION:=}"
-  : "${ROOT_METHOD:=none}"
-
-  if [[ -z "$susfs_ref" ]]; then
-    echo "[susfs] SUSFS_REF is empty; skipping."
-    return 0
-  fi
-
-  command -v git >/dev/null 2>&1 || { echo "[susfs] ERROR: git not found."; return 20; }
-  command -v patch >/dev/null 2>&1 || { echo "[susfs] ERROR: patch not found."; return 21; }
-
-  local tmp="/tmp/susfs4ksu.$$"
-  rm -rf "$tmp"
-  trap 'rm -rf "$tmp" >/dev/null 2>&1 || true' RETURN
-
-  echo "[susfs] Cloning SUSFS repo: $SUSFS_REPO_URL (ref=$susfs_ref)"
-  git clone --depth 1 --branch "$susfs_ref" "$SUSFS_REPO_URL" "$tmp"
-
-  # Find KernelSU dir produced by root setup scripts
-  local ksu_dir=""
-  ksu_dir="$(find "$kernel_dir" -maxdepth 6 -type d -name KernelSU -print -quit 2>/dev/null || true)"
-  if [[ -z "$ksu_dir" ]]; then
-    echo "[susfs] ERROR: Could not find KernelSU directory under: $kernel_dir"
-    return 22
-  fi
-
-  # Common dir (GKI kernels often use kernel_root/common). If missing, use kernel root.
-  local common_dir="$kernel_dir/common"
-  [[ -d "$common_dir" ]] || common_dir="$kernel_dir"
-
-  reset_all() {
-    echo "[susfs] Resetting kernel working tree(s) (cleanup after failure)..."
-    ( cd "$kernel_dir" && git reset --hard >/dev/null 2>&1 || true )
-    ( cd "$kernel_dir" && git clean -fdx >/dev/null 2>&1 || true )
-    if [[ -d "$ksu_dir/.git" ]]; then
-      ( cd "$ksu_dir" && git reset --hard >/dev/null 2>&1 || true )
-      ( cd "$ksu_dir" && git clean -fdx >/dev/null 2>&1 || true )
-    fi
-  }
-
-  # Detect kernel version for better matching (best effort)
-  local kver="${SUSFS_KERNEL_VERSION}"
-  if [[ -z "$kver" && "$susfs_ref" =~ ([0-9]+\.[0-9]+) ]]; then
-    kver="${BASH_REMATCH[1]}"
-  fi
-  if [[ -z "$kver" && -f "$common_dir/Makefile" ]]; then
-    local v p
-    v="$(grep -E '^VERSION[[:space:]]*=' "$common_dir/Makefile" | head -n1 | awk -F= '{gsub(/[[:space:]]/,"",$2);print $2}')"
-    p="$(grep -E '^PATCHLEVEL[[:space:]]*=' "$common_dir/Makefile" | head -n1 | awk -F= '{gsub(/[[:space:]]/,"",$2);print $2}')"
-    if [[ -n "$v" && -n "$p" ]]; then
-      kver="${v}.${p}"
-    fi
-  fi
-
-  local and_token=""
-  if [[ "$susfs_ref" =~ (android[0-9]+) ]]; then
-    and_token="${BASH_REMATCH[1]}"
-  fi
-
-  # Decide whether to apply KernelSU-side SUSFS patch
-  local apply_ksu_patch="true"
-  if [[ "$ROOT_METHOD" == "sukisu-ultra" ]]; then
-    apply_ksu_patch="false"
-  fi
-
-  # Find KernelSU SUSFS patch (if we plan to use it)
-  local ksu_patch=""
-  if [[ "$apply_ksu_patch" == "true" ]]; then
-    ksu_patch="$(find "$tmp" -type f -name '10_enable_susfs_for_ksu.patch' -print -quit 2>/dev/null || true)"
-    if [[ -z "$ksu_patch" ]]; then
-      echo "[susfs] 10_enable_susfs_for_ksu.patch not found -> skipping KernelSU-side SUSFS patch"
-      apply_ksu_patch="false"
-    fi
-  fi
-
-  # Collect kernel patch candidates (supports names like 50_add_susfs_in_gki-android13-5.10.patch)
-  local -a candidates=()
-  while IFS= read -r -d '' f; do
-    candidates+=( "$f" )
-  done < <(find "$tmp" -type f -name '50_add_susfs*.patch' -print0 2>/dev/null || true)
-
-  if (( ${#candidates[@]} == 0 )); then
-    echo "[susfs] ERROR: Could not find any kernel patch matching 50_add_susfs*.patch"
-    return 23
-  fi
-
-  # Pick best kernel patch by scoring
-  local ref_lc kver_lc and_lc
-  ref_lc="$(echo "$susfs_ref" | tr '[:upper:]' '[:lower:]')"
-  kver_lc="$(echo "${kver:-}" | tr '[:upper:]' '[:lower:]')"
-  and_lc="$(echo "${and_token:-}" | tr '[:upper:]' '[:lower:]')"
-
-  local best="" best_score=-1
-
-  for f in "${candidates[@]}"; do
-    local base lc score
-    base="$(basename "$f")"
-    lc="$(echo "$base" | tr '[:upper:]' '[:lower:]')"
-    score=0
-
-    if [[ -n "$ref_lc" && "$lc" == *"$ref_lc"* ]]; then score=$((score + 1000)); fi
-    if [[ -n "$kver_lc" && "$lc" == *"$kver_lc"* ]]; then score=$((score + 200)); fi
-    if [[ -n "$and_lc" && "$lc" == *"$and_lc"* ]]; then score=$((score + 120)); fi
-    [[ "$lc" == *"gki"* ]] && score=$((score + 30))
-    [[ "$lc" == *"in_gki"* ]] && score=$((score + 15))
-    score=$((score - ${#lc} / 50))
-
-    if (( score > best_score )); then
-      best_score=$score
-      best="$f"
-    fi
-  done
-
-  if [[ -z "$best" ]]; then
-    echo "[susfs] ERROR: Failed to choose a SUSFS kernel patch."
-    return 25
-  fi
-
-  echo "[susfs] KernelSU dir: $ksu_dir"
-  echo "[susfs] Common dir:   $common_dir"
-  echo "[susfs] Detected kernel: ${kver:-unknown} (ref=$susfs_ref  android=${and_token:-unknown})"
-  if [[ "$apply_ksu_patch" == "true" ]]; then
-    echo "[susfs] Using KernelSU patch: $(basename "$ksu_patch")"
-  else
-    echo "[susfs] Skipping KernelSU-side patch (ROOT_METHOD=$ROOT_METHOD)"
-  fi
-  echo "[susfs] Using kernel patch:   $(basename "$best") (score=$best_score)"
-
-  # Copy overlays (if present) BEFORE dry-run, as patch may touch these files.
-  if [[ -d "$tmp/kernel_patches/fs" ]]; then
-    mkdir -p "$common_dir/fs"
-    cp -af "$tmp/kernel_patches/fs/." "$common_dir/fs/"
-  fi
-  if [[ -d "$tmp/kernel_patches/include/linux" ]]; then
-    mkdir -p "$common_dir/include/linux"
-    cp -af "$tmp/kernel_patches/include/linux/." "$common_dir/include/linux/"
-  fi
-
-  # Atomic patch strategy:
-  # 1) dry-run everything
-  # 2) only if dry-run passes, apply for real
-  if [[ "$apply_ksu_patch" == "true" ]]; then
-    if ! ( cd "$ksu_dir" && patch -p1 --dry-run --batch --forward --fuzz=0 < "$ksu_patch" >/dev/null 2>&1 ); then
-      echo "[susfs] ERROR: KernelSU SUSFS patch does not apply cleanly. Aborting to avoid dirty tree."
-      reset_all
-      return 30
-    fi
-  fi
-
-  if ! ( cd "$common_dir" && patch -p1 --dry-run --batch --forward --fuzz=0 < "$best" >/dev/null 2>&1 ); then
-    echo "[susfs] ERROR: Kernel SUSFS patch does not apply cleanly. Aborting to avoid dirty tree."
-    reset_all
-    return 31
-  fi
-
-  # Apply patches (safe now)
-  if [[ "$apply_ksu_patch" == "true" ]]; then
-    echo "[susfs] Applying KernelSU SUSFS patch..."
-    ( cd "$ksu_dir" && patch -p1 --batch --forward --fuzz=0 < "$ksu_patch" )
-  fi
-
-  echo "[susfs] Applying kernel SUSFS patch..."
-  ( cd "$common_dir" && patch -p1 --batch --forward --fuzz=0 < "$best" )
-
-  # Android 14+ tip from upstream docs: remove protected exports files if present
-  rm -f "$common_dir/android/abi_gki_protected_exports_aarch64" \
-        "$common_dir/android/abi_gki_protected_exports_x86_64" 2>/dev/null || true
-
-  # Enable minimal config
-  if declare -F ensure_kconfig >/dev/null 2>&1 && [[ -f "$defconfig_path" ]]; then
-    ensure_kconfig CONFIG_KSU_SUSFS y "$defconfig_path"
-  fi
-}
 EOF
 
   chmod 0755 "$USERSCRIPTS_DIR/before.sh"
-  chmod 0644 "$USERSCRIPTS_DIR/susfs.sh"
 
   userscripts_assert_exec_mount
   [[ -x "$USERSCRIPTS_DIR/before.sh" ]] || { echo "ERROR: before.sh is not executable"; exit 4; }
