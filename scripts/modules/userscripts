@@ -227,24 +227,7 @@ apply_sukisu_patchset() {
     return 0
   fi
 
-  # 1) syscall hooks patch (required if we enable CONFIG_KSU_SYSCALL_HOOK)
-  local syscall_patch=""
-  syscall_patch="$(find "$tmp" -type f -iname '*syscall*hook*.patch' -print -quit 2>/dev/null || true)"
-
-  if [[ -n "$syscall_patch" ]]; then
-    if patch_apply_safe "$KERNEL_DIR" "$syscall_patch" "SukiSU syscall_hooks"; then
-      ensure_kconfig CONFIG_KSU_SYSCALL_HOOK y "$DEFCONFIG_PATH" || true
-      echo "[before.sh] Enabled CONFIG_KSU_SYSCALL_HOOK (patch applied)."
-    else
-      ensure_not_set CONFIG_KSU_SYSCALL_HOOK "$DEFCONFIG_PATH" || true
-      echo "[before.sh] Leaving CONFIG_KSU_SYSCALL_HOOK disabled (patch did not apply)."
-    fi
-  else
-    ensure_not_set CONFIG_KSU_SYSCALL_HOOK "$DEFCONFIG_PATH" || true
-    echo "[before.sh] syscall_hooks patch not found in SukiSU_patch; leaving CONFIG_KSU_SYSCALL_HOOK disabled."
-  fi
-
-  # 2) hide stuff patch (best-effort)
+  # hide stuff patch (best-effort)
   local hide_patch=""
   hide_patch="$(find "$tmp" -type f -name '69_hide_stuff.patch' -print -quit 2>/dev/null || true)"
   if [[ -n "$hide_patch" ]]; then
@@ -358,29 +341,37 @@ case "$ROOT_METHOD" in
   kernelsu)
     echo "[before.sh] Integrating KernelSU..."
     curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
-    ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH" || true
+    ensure_kconfig CONFIG_KSU m "$DEFCONFIG_PATH"
+
+    ensure_kconfig CONFIG_MODULES=y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KPROBES=y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KRETPROBES=y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KALLSYMS=y "$DEFCONFIG_PATH"
     ;;
   kernelsu-next)
     echo "[before.sh] Integrating KernelSU Next..."
     curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s dev
-    ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH" || true
+    ensure_kconfig CONFIG_KSU m "$DEFCONFIG_PATH"
+
+    ensure_kconfig CONFIG_MODULES=y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KPROBES=y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KRETPROBES=y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KALLSYMS=y "$DEFCONFIG_PATH"
     ;;
   sukisu-ultra)
     echo "[before.sh] Integrating SukiSU Ultra..."
     curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
-    ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KSU_SYSCALL_HOOK y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KRETPROBES y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_HAVE_SYSCALL_TRACEPOINTS y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KSU m "$DEFCONFIG_PATH"
 
-    ensure_kconfig CONFIG_KALLSYMS y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_MODULES=y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KPROBES=y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KRETPROBES=y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KALLSYMS=y "$DEFCONFIG_PATH"
+
     ensure_kconfig CONFIG_KPM y "$DEFCONFIG_PATH"
 
     # Apply SukiSU_patch patches (this fixes syscall-hook build failures)
-    #apply_sukisu_patchset
+    apply_sukisu_patchset
     ;;
   *)
     echo "[before.sh] Unknown ROOT_METHOD='$ROOT_METHOD'"
