@@ -22,8 +22,7 @@ export ROOT_METHOD
 workdir_init "base"
 local_manifests_clear
 
-# Purge kernel folder BEFORE the container does repo sync
-repoclean_kernel_all
+repoclean_all
 
 custom_apps_prepare
 userscripts_write_before_sh
