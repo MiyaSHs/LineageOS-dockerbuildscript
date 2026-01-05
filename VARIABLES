@@ -21,3 +21,6 @@ ZIP_UP_IMAGES="true"
 
 ### >>> change this to true if you want to create a local mirror of the LineageOS source (> 200 GB)
 LOCAL_MIRROR="false"
+
+# if you want it to always reset/clean kernel + partner_gms every time, even if clean
+REPOCLEAN_FORCE=true
