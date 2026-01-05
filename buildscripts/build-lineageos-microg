@@ -23,8 +23,7 @@ workdir_init "microg"
 local_manifests_clear
 local_manifests_write_microg
 
-# Purge kernel folder BEFORE the container does repo sync
-repoclean_kernel_all
+repoclean_all
 
 custom_apps_prepare
 userscripts_write_before_sh
