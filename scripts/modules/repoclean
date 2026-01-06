@@ -1,130 +1,30 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-# repoclean (non-destructive)
-# Purpose: prevent `repo sync` failures caused by dirty checkouts, without deleting the whole source.
+# Minimal repoclean:
+# - Finds each repo checkout under work/src/** (or SRC_DIR if set)
+# - Deletes <repo_top>/kernel (so next repo sync re-fetches kernel cleanly)
 #
-# What it does:
-# - For each Android repo checkout under SRC_DIR:
-#   - resets/cleans any git worktrees under:
-#       * kernel/**           (commonly dirtied by KSU/SukiSU patching)
-#       * vendor/partner_gms  (commonly dirtied if you patch/remove FDroid there)
-# - It only runs `git reset --hard` + `git clean -fdx` when the repo is dirty,
-#   unless you force it.
-#
-# Controls:
-#   REPOCLEAN_ENABLE=true|false        (default true)
-#   REPOCLEAN_FORCE=true|false         (default false)  # always reset/clean, even if clean
-#   REPOCLEAN_KERNEL=true|false        (default true)
-#   REPOCLEAN_PARTNER_GMS=true|false   (default true)
-#   REPOCLEAN_VERBOSE=true|false       (default true)
-#
-# Note:
-# - This WILL discard local changes in those repos. That’s intended for automated builds.
+# This fixes: "Cannot remove project: uncommitted changes are present" for kernel/*
 
-: "${REPOCLEAN_ENABLE:=true}"
-: "${REPOCLEAN_FORCE:=false}"
-: "${REPOCLEAN_KERNEL:=true}"
-: "${REPOCLEAN_PARTNER_GMS:=true}"
-: "${REPOCLEAN_VERBOSE:=true}"
+repoclean() {
+  local project_dir src_root
+  project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+  src_root="${SRC_DIR:-$project_dir/work/src}"
 
-_log() {
-  [[ "$REPOCLEAN_VERBOSE" == "true" ]] || return 0
-  echo "[repoclean] $*"
-}
+  [[ -d "$src_root" ]] || return 0
 
-_is_git_worktree() {
-  local d="$1"
-  # Android repo checkouts often have .git as a FILE pointing to gitdir
-  [[ -e "$d/.git" ]] || return 1
-  git -C "$d" rev-parse --is-inside-work-tree >/dev/null 2>&1
-}
-
-_is_dirty() {
-  local d="$1"
-  [[ "$REPOCLEAN_FORCE" == "true" ]] && return 0
-  [[ -n "$(git -C "$d" status --porcelain 2>/dev/null || true)" ]]
-}
-
-_hard_clean() {
-  local d="$1"
-  _log "Cleaning: $d"
-  git -C "$d" reset --hard >/dev/null 2>&1 || true
-  git -C "$d" clean -fdx  >/dev/null 2>&1 || true
-}
-
-_clean_if_needed() {
-  local d="$1"
-  _is_git_worktree "$d" || return 0
-
-  if _is_dirty "$d"; then
-    _hard_clean "$d"
-  else
-    _log "Already clean: $d"
-  fi
-}
-
-# Clean all kernel git repos inside a given repo top
-repoclean_kernel_top() {
-  local top="$1"
-  [[ "$REPOCLEAN_ENABLE" == "true" ]] || return 0
-  [[ "$REPOCLEAN_KERNEL" == "true" ]] || return 0
-  [[ -n "$top" && -d "$top/.repo" ]] || return 0
-  [[ "$top" != "/" ]] || return 0
-
-  local kroot="$top/kernel"
-  [[ -d "$kroot" ]] || return 0
-
-  _log "Scanning kernel repos under: $kroot"
-
-  # Find git worktrees under kernel/ (depth limited to keep it fast)
-  while IFS= read -r -d '' d; do
-    _clean_if_needed "$d"
-  done < <(
-    find "$kroot" -maxdepth 5 -type f -name .git -print0 2>/dev/null \
-      | xargs -0 -n1 dirname -z 2>/dev/null || true
-  )
-
-  # Also clean if kernel root itself is a git checkout (rare)
-  _clean_if_needed "$kroot"
-}
-
-# Clean vendor/partner_gms if present
-repoclean_partner_gms_top() {
-  local top="$1"
-  [[ "$REPOCLEAN_ENABLE" == "true" ]] || return 0
-  [[ "$REPOCLEAN_PARTNER_GMS" == "true" ]] || return 0
-  [[ -n "$top" && -d "$top/.repo" ]] || return 0
-  [[ "$top" != "/" ]] || return 0
-
-  local d="$top/vendor/partner_gms"
-  [[ -d "$d" ]] || return 0
-
-  _log "Checking vendor/partner_gms: $d"
-  _clean_if_needed "$d"
-}
-
-# For compatibility with existing call sites
-repoclean_kernel_all() {
-  [[ "$REPOCLEAN_ENABLE" == "true" ]] || return 0
-  [[ -n "${SRC_DIR:-}" && -d "${SRC_DIR:-}" ]] || return 0
-
+  # For each Android repo top (directory containing .repo), purge kernel/
   while IFS= read -r -d '' repodir; do
-    repoclean_kernel_top "$(dirname "$repodir")"
-  done < <(find "$SRC_DIR" -maxdepth 3 -type d -name .repo -print0 2>/dev/null || true)
-}
+    local top kdir
+    top="$(dirname "$repodir")"
+    kdir="$top/kernel"
 
-repoclean_partner_gms_all() {
-  [[ "$REPOCLEAN_ENABLE" == "true" ]] || return 0
-  [[ -n "${SRC_DIR:-}" && -d "${SRC_DIR:-}" ]] || return 0
-
-  while IFS= read -r -d '' repodir; do
-    repoclean_partner_gms_top "$(dirname "$repodir")"
-  done < <(find "$SRC_DIR" -maxdepth 3 -type d -name .repo -print0 2>/dev/null || true)
-}
-
-# Convenience: clean both kernel + partner_gms for all trees
-repoclean_all() {
-  repoclean_kernel_all
-  repoclean_partner_gms_all
+    # Safety: don't follow symlinks, don't touch /
+    [[ "$top" != "/" ]] || continue
+    if [[ -d "$kdir" && ! -L "$kdir" ]]; then
+      echo "[repoclean] Removing: $kdir"
+      rm -rf "$kdir"
+    fi
+  done < <(find "$src_root" -maxdepth 3 -type d -name .repo -print0 2>/dev/null || true)
 }
