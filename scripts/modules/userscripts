@@ -350,7 +350,7 @@ case "$ROOT_METHOD" in
     ;;
   kernelsu-next)
     echo "[before.sh] Integrating KernelSU Next..."
-    curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s dev
+    curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
     ensure_kconfig CONFIG_KSU m "$DEFCONFIG_PATH"
 
     ensure_kconfig CONFIG_MODULES=y "$DEFCONFIG_PATH"
@@ -360,7 +360,7 @@ case "$ROOT_METHOD" in
     ;;
   sukisu-ultra)
     echo "[before.sh] Integrating SukiSU Ultra..."
-    curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+    curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -
     ensure_kconfig CONFIG_KSU m "$DEFCONFIG_PATH"
 
     ensure_kconfig CONFIG_MODULES=y "$DEFCONFIG_PATH"
