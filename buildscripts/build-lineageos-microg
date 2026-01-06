@@ -23,7 +23,7 @@ workdir_init "microg"
 local_manifests_clear
 local_manifests_write_microg
 
-repoclean_all
+repoclean
 
 custom_apps_prepare
 userscripts_write_before_sh
