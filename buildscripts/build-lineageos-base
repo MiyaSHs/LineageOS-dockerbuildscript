@@ -22,7 +22,7 @@ export ROOT_METHOD
 workdir_init "base"
 local_manifests_clear
 
-repoclean_all
+repoclean
 
 custom_apps_prepare
 userscripts_write_before_sh
