@@ -343,30 +343,30 @@ case "$ROOT_METHOD" in
     curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
     ensure_kconfig CONFIG_KSU m "$DEFCONFIG_PATH"
 
-    ensure_kconfig CONFIG_MODULES=y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KPROBES=y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KRETPROBES=y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KALLSYMS=y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_MODULES y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KRETPROBES y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KALLSYMS y "$DEFCONFIG_PATH"
     ;;
   kernelsu-next)
     echo "[before.sh] Integrating KernelSU Next..."
     curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
     ensure_kconfig CONFIG_KSU m "$DEFCONFIG_PATH"
 
-    ensure_kconfig CONFIG_MODULES=y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KPROBES=y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KRETPROBES=y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KALLSYMS=y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_MODULES y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KRETPROBES y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KALLSYMS y "$DEFCONFIG_PATH"
     ;;
   sukisu-ultra)
     echo "[before.sh] Integrating SukiSU Ultra..."
     curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -
     ensure_kconfig CONFIG_KSU m "$DEFCONFIG_PATH"
 
-    ensure_kconfig CONFIG_MODULES=y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KPROBES=y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KRETPROBES=y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KALLSYMS=y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_MODULES y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KRETPROBES y "$DEFCONFIG_PATH"
+    ensure_kconfig CONFIG_KALLSYMS y "$DEFCONFIG_PATH"
 
     ensure_kconfig CONFIG_KPM y "$DEFCONFIG_PATH"
 
