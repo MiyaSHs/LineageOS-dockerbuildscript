@@ -62,8 +62,8 @@ if [[ "$REPLACE_STOCK_FDROID" == "true" && -d "$TOP/vendor/partner_gms" ]]; then
 
     while IFS= read -r f; do
       sed -i \
-        -e "s/[[:space:]]\\b${token}\\b[[:space:]]*/ /g" \
-        -e "s/[[:space:]]\\{2,\\}/ /g" \
+        -e "s/[[:space:]]\b${token}\b[[:space:]]*/ /g" \
+        -e "s/[[:space:]]\{2,\}/ /g" \
         "$f" || true
     done <<<"$files"
   }
@@ -161,6 +161,11 @@ echo "[before.sh] Defconfig:     $DEFCONFIG_PATH"
 echo "[before.sh] Opt profile:   $KERNEL_OPT_PROFILE"
 echo "[before.sh] Root method:   $ROOT_METHOD"
 
+echo "[before.sh] Exporting KERNEL_DIR, ARCH, DEFCONFIG, OUT_DIR for KernelSU integration."
+export KERNEL_DIR
+export ARCH=arm64
+export DEFCONFIG="$(basename "$DEFCONFIG_PATH")"
+export OUT_DIR="$KERNEL_DIR/out"
 cd "$KERNEL_DIR"
 
 git reset --hard
@@ -191,7 +196,7 @@ ensure_not_set() {
 
 kconfig_has() {
   local sym="$1"
-  grep -Rqs --include='Kconfig*' "^[[:space:]]*config[[:space:]]\\+${sym}\\b" . 2>/dev/null
+  grep -Rqs --include='Kconfig*' "^[[:space:]]*config[[:space:]]\+${sym}\b" . 2>/dev/null
 }
 
 # Safe patch apply (no partial applies). Tries fuzz=0 then fuzz=3.
@@ -342,7 +347,7 @@ case "$ROOT_METHOD" in
     echo "[before.sh] Integrating KernelSU..."
     curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
     ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KSU_DEBUG n "$DEFCONFIG_PATH"
+    ensure_not_set CONFIG_KSU_DEBUG "$DEFCONFIG_PATH"
 
     ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
     ensure_kconfig CONFIG_KRETPROBES y "$DEFCONFIG_PATH"
@@ -354,7 +359,7 @@ case "$ROOT_METHOD" in
     echo "[before.sh] Integrating KernelSU Next..."
     curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
     ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KSU_DEBUG n "$DEFCONFIG_PATH"
+    ensure_not_set CONFIG_KSU_DEBUG "$DEFCONFIG_PATH"
 
     ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
     ensure_kconfig CONFIG_KRETPROBES y "$DEFCONFIG_PATH"
@@ -363,7 +368,7 @@ case "$ROOT_METHOD" in
     echo "[before.sh] Integrating SukiSU Ultra..."
     curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
     ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KSU_DEBUG n "$DEFCONFIG_PATH"
+    ensure_not_set CONFIG_KSU_DEBUG "$DEFCONFIG_PATH"
 
     ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
     ensure_kconfig CONFIG_KRETPROBES y "$DEFCONFIG_PATH"
