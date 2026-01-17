@@ -3,128 +3,228 @@ set -eo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-# GitHub ZIP downloads and some filesystems can lose executable bits.
-# Make sure entrypoints are runnable before we exec() them.
-for f in \
-  "$PROJECT_DIR/main" \
-  "$PROJECT_DIR/buildscripts"/* \
-  "$PROJECT_DIR/scripts"/* \
-  "$PROJECT_DIR/scripts/modules"/*
-  do
+# Make sure scripts are runnable even if GitHub/zip stripped +x
+for f in "$PROJECT_DIR/main" "$PROJECT_DIR/buildscripts/"* "$PROJECT_DIR/scripts/"* "$PROJECT_DIR/scripts/modules/"*; do
   [[ -f "$f" ]] && chmod +x "$f" || true
 done
 
+# Load framework + modules
 source "$PROJECT_DIR/scripts/bootstrap"
 source "$PROJECT_DIR/scripts/ui"
 source "$PROJECT_DIR/scripts/modules/workdir"
-source "$PROJECT_DIR/scripts/modules/manifests"
 source "$PROJECT_DIR/scripts/modules/customapps"
 source "$PROJECT_DIR/scripts/modules/stores"
-source "$PROJECT_DIR/scripts/modules/userscripts"
 
-# Default custom apps payload dir (can be overridden by modules/customapps)
-CUSTOM_APPS_PAYLOAD_DIR="${CUSTOM_APPS_PAYLOAD_DIR:-$PROJECT_DIR/custom_apps_payload}"
-mkdir -p "$CUSTOM_APPS_PAYLOAD_DIR"
+# -----------------------------------------------------------------------------
+# OVERRIDE prompt_* so we ALWAYS prompt once per run (Enter keeps previous)
+# -----------------------------------------------------------------------------
+prompt_nonempty() {
+  local var_name="$1"
+  local prompt="$2"
+  local explicit_default="${3-}"
+  declare -n ref="$var_name"
+
+  local default="${explicit_default:-${ref-}}"
+
+  while true; do
+    if [[ -n "$default" ]]; then
+      read -rp "$prompt [$default]: " ref
+      ref="${ref:-$default}"
+    else
+      read -rp "$prompt: " ref
+    fi
+    [[ -n "${ref}" ]] && return 0
+  done
+}
+
+prompt_int() {
+  local var_name="$1"
+  local prompt="$2"
+  local explicit_default="${3-}"
+  declare -n ref="$var_name"
+
+  local default="${explicit_default:-${ref-}}"
+
+  while true; do
+    if [[ -n "$default" ]]; then
+      read -rp "$prompt [$default]: " ref
+      ref="${ref:-$default}"
+    else
+      read -rp "$prompt: " ref
+    fi
+    [[ "$ref" =~ ^[0-9]+$ ]] && return 0
+    echo "Please enter a valid integer."
+  done
+}
+
+prompt_choice() {
+  local var_name="$1"
+  local prompt="$2"
+  shift 2
+  local options=("$@")
+  declare -n ref="$var_name"
+
+  local current="${ref-}"
+  local default_idx=1
+
+  # If current matches an option, that option becomes default
+  local i=1
+  for opt in "${options[@]}"; do
+    if [[ -n "$current" && "$opt" == "$current" ]]; then
+      default_idx="$i"
+      break
+    fi
+    ((i++))
+  done
+
+  echo
+  echo "$prompt"
+  i=1
+  for opt in "${options[@]}"; do
+    if (( i == default_idx )); then
+      echo "  $i) $opt (default)"
+    else
+      echo "  $i) $opt"
+    fi
+    ((i++))
+  done
+
+  while true; do
+    read -rp "Choose [1-${#options[@]}] (Enter = $default_idx): " choice
+    if [[ -z "$choice" ]]; then
+      ref="${options[$((default_idx-1))]}"
+      return 0
+    fi
+    [[ "$choice" =~ ^[0-9]+$ ]] || continue
+    (( choice >= 1 && choice <= ${#options[@]} )) || continue
+    ref="${options[$((choice-1))]}"
+    return 0
+  done
+}
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+normalize_device_list() {
+  # Accept "a b c" or "a,b,c" and normalize to "a,b,c"
+  local s="$1"
+  s="$(echo "$s" | tr ' ' ',' | sed -E 's/,+/,/g; s/^,|,$//g')"
+  echo "$s"
+}
 
 save_variables() {
-  local file="$PROJECT_DIR/VARIABLES"
+  local out="$PROJECT_DIR/VARIABLES"
   {
-    echo "DEVICE_LIST=\"$DEVICE_LIST\""
-    echo "BRANCH_NAME=\"$BRANCH_NAME\""
-    echo "ANDROID_VERSION=\"$ANDROID_VERSION\""
-    echo "PARALLEL_JOBS=\"$PARALLEL_JOBS\""
-    echo "ZIP_UP_IMAGES=\"$ZIP_UP_IMAGES\""
-    echo "SIGN_BUILDS=\"$SIGN_BUILDS\""
-    echo "SIGNATURE_SPOOFING=\"$SIGNATURE_SPOOFING\""
-    echo "BUILD_FLAVOR=\"$BUILD_FLAVOR\""
-    echo "STORE_CLIENT=\"$STORE_CLIENT\""
-    echo "ADD_AURORA=\"$ADD_AURORA\""
-    echo "REPLACE_STOCK_FDROID=\"$REPLACE_STOCK_FDROID\""
-    echo "ROOT_METHOD=\"$ROOT_METHOD\""
-    echo "KERNEL_OPT_PROFILE=\"$KERNEL_OPT_PROFILE\""
-    echo "LOCAL_MIRROR=\"$LOCAL_MIRROR\""
-  } >"$file"
-  echo "Saved config to $file"
+    echo '# Auto-generated config (safe to edit). Do not commit.'
+    printf 'DEVICE_LIST=%q\n' "$DEVICE_LIST"
+    printf 'BRANCH_NAME=%q\n' "$BRANCH_NAME"
+    printf 'ANDROID_VERSION=%q\n' "${ANDROID_VERSION:-16.0}"
+    printf 'SIGNATURE_SPOOFING=%q\n' "$SIGNATURE_SPOOFING"
+    printf 'SIGN_BUILDS=%q\n' "$SIGN_BUILDS"
+    printf 'CCACHE_SIZE=%q\n' "$CCACHE_SIZE"
+    printf 'PARALLEL_JOBS=%q\n' "$PARALLEL_JOBS"
+    printf 'KERNEL_OPT_PROFILE=%q\n' "$KERNEL_OPT_PROFILE"
+    printf 'BUILD_FLAVOR=%q\n' "$BUILD_FLAVOR"
+    printf 'STORE_CLIENT=%q\n' "$STORE_CLIENT"
+    printf 'ADD_AURORA_STORE=%q\n' "$ADD_AURORA_STORE"
+    printf 'REPLACE_STOCK_FDROID=%q\n' "$REPLACE_STOCK_FDROID"
+    printf 'ROOT_METHOD=%q\n' "$ROOT_METHOD"
+    printf 'ZIP_UP_IMAGES=%q\n' "$ZIP_UP_IMAGES"
+    printf 'LOCAL_MIRROR=%q\n' "$LOCAL_MIRROR"
+  } > "$out"
+  chmod 0600 "$out" 2>/dev/null || true
+  echo "Saved config to $out"
 }
 
 run_keygen_if_needed() {
-  # If signing requested, optionally generate keys.
+  # Ensure work dirs exist so keys go into work/keys
+  workdir_init "$BUILD_FLAVOR"
+
   if [[ "${SIGN_BUILDS}" == "true" ]]; then
-    if compgen -G "$KEYS_DIR/*.pk8" >/dev/null 2>&1; then
-      echo "Signing keys already exist in: $KEYS_DIR"
-    else
-      echo "Signing keys directory appears empty: $KEYS_DIR"
-    fi
-
-    local ans
-    ans=""
-    while [[ "$ans" != "y" && "$ans" != "n" ]]; do
-      read -r -p "Generate signing keys now? (y/n): " ans
-      ans="${ans,,}"
-    done
-
-    if [[ "$ans" == "y" ]]; then
-      "$PROJECT_DIR/scripts/genkeys"
+    echo
+    echo "Signing is enabled."
+    read -rp "Generate / verify signing keys now? [Y/n]: " ans
+    ans="${ans:-Y}"
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      bash "$PROJECT_DIR/scripts/genkeys"
     fi
   fi
 }
 
-check_deps
+main() {
+  check_deps
 
-# Prompts
-prompt_nonempty DEVICE_LIST "Device codename(s) (space-separated)" "${DEVICE_LIST:-}"
-prompt_nonempty BRANCH_NAME "Lineage branch (e.g. lineage-23.0)" "${BRANCH_NAME:-}"
-prompt_nonempty ANDROID_VERSION "Android version (e.g. 16.0)" "${ANDROID_VERSION:-}"
-prompt_int PARALLEL_JOBS "Parallel repo sync/build jobs" "${PARALLEL_JOBS:-}"
+  # Show tips if VARIABLES doesn’t exist yet (not a question, just info)
+  if [[ ! -f "$PROJECT_DIR/VARIABLES" ]]; then
+    echo "Tips:"
+    echo "  DEVICE_LIST: codename(s). Examples: mondrian  OR  mondrian,foo"
+    echo "  BRANCH_NAME: lineage-23.0 (etc)"
+    echo
+  fi
 
-# Flavor selection
-prompt_choice BUILD_FLAVOR "Build flavor" "${BUILD_FLAVOR:-base}" "base" "microg"
+  # Ask every run (Enter keeps previous)
+  prompt_nonempty DEVICE_LIST "DEVICE_LIST (device codename(s))" "$DEVICE_LIST"
+  DEVICE_LIST="$(normalize_device_list "$DEVICE_LIST")"
 
-# Signature spoofing only matters for microG but letting it be explicit is fine.
-prompt_choice SIGNATURE_SPOOFING "Signature spoofing mode" "${SIGNATURE_SPOOFING:-restricted}" "restricted" "yes" "no"
+  prompt_nonempty BRANCH_NAME "BRANCH_NAME (Lineage branch)" "$BRANCH_NAME"
 
-# Signing
-prompt_choice SIGN_BUILDS "Sign builds?" "${SIGN_BUILDS:-false}" "false" "true"
+  : "${ANDROID_VERSION:=16.0}"
+  prompt_nonempty ANDROID_VERSION "Android version (informational)" "$ANDROID_VERSION"
 
-# Store selection
-prompt_choice STORE_CLIENT "Which F-Droid client (if any)?" "${STORE_CLIENT:-none}" "none" "fdroid" "droidify" "neostore"
-prompt_choice ADD_AURORA "Also add Aurora Store?" "${ADD_AURORA:-false}" "false" "true"
+  prompt_choice SIGNATURE_SPOOFING "SIGNATURE_SPOOFING:" "no" "restricted" "yes"
+  prompt_choice SIGN_BUILDS "SIGN_BUILDS (sign builds?):" "true" "false"
 
-# MicroG builds already ship FDroid (+ PrivExt) via vendor/partner_gms.
-# Replacing it requires modifying that repo, which can make repo-sync more fragile.
-# Default to keeping it unless the user explicitly opts in.
-if [[ "$BUILD_FLAVOR" == "microg" ]]; then
-  if [[ "$STORE_CLIENT" != "none" && "$STORE_CLIENT" != "fdroid" ]]; then
+  prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (e.g. 100G)" "$CCACHE_SIZE"
+  prompt_int PARALLEL_JOBS "PARALLEL_JOBS (repo sync/build)" "$PARALLEL_JOBS"
+
+  prompt_choice KERNEL_OPT_PROFILE "Kernel optimization profile:" \
+    "none" "battery" "balanced" "performance"
+
+  # FIXED: only real options here (no injected default) -> no duplicates
+  BUILD_FLAVOR="${BUILD_FLAVOR:-base}"
+  prompt_choice BUILD_FLAVOR "Build flavor:" "base" "microg"
+
+  prompt_choice STORE_CLIENT "Store client (system app):" \
+    "none" "fdroid" "droidify" "neostore"
+  prompt_choice ADD_AURORA_STORE "Add Aurora Store (system app)?" "false" "true"
+
+  # Only relevant for microg builds (vendor/partner_gms includes FDroid by default)
+  if [[ "$BUILD_FLAVOR" == "microg" && "$STORE_CLIENT" != "fdroid" && "$STORE_CLIENT" != "none" ]]; then
     prompt_choice REPLACE_STOCK_FDROID \
-      "MicroG build includes FDroid + PrivExt. Remove them (experimental)?" \
-      "${REPLACE_STOCK_FDROID:-false}" "false" "true"
+      "Remove stock FDroid+PrivExt from vendor/partner_gms? (experimental)" \
+      "false" "true"
   else
     REPLACE_STOCK_FDROID="false"
   fi
-else
-  REPLACE_STOCK_FDROID="false"
+
+  # Apply store selection into CUSTOM_APPS and optionally edit/add extras
+  stores_apply "$BUILD_FLAVOR"
+  custom_apps_prompt
+
+  prompt_choice ROOT_METHOD "Root method:" "none" "kernelsu" "kernelsu-next" "sukisu-ultra"
+
+  # Generate keys after signing choice (as you requested)
+  run_keygen_if_needed
+
+  # Save config each run (Enter keeps defaults)
+  echo
+  read -rp "Save these settings to VARIABLES? [Y/n]: " save_ans
+  save_ans="${save_ans:-Y}"
+  if [[ "$save_ans" =~ ^[Yy]$ ]]; then
+    save_variables
+  fi
+
+  # Export config for buildscripts
+  export_config
+  export ROOT_METHOD BUILD_FLAVOR REPLACE_STOCK_FDROID ANDROID_VERSION
+
+  case "$BUILD_FLAVOR" in
+    base)   exec bash "$PROJECT_DIR/buildscripts/build-lineageos-base" ;;
+    microg) exec bash "$PROJECT_DIR/buildscripts/build-lineageos-microg" ;;
+    *) die "Unknown BUILD_FLAVOR: $BUILD_FLAVOR" ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
 fi
-
-# Apply store selections to CUSTOM_APPS (AUTO block)
-stores_apply
-
-# Custom apps list prompt (edit/clear/keep)
-custom_apps_prompt
-
-# Root selection
-prompt_choice ROOT_METHOD "Root method" "${ROOT_METHOD:-none}" "none" "kernelsu" "kernelsu-next" "sukisu-ultra"
-
-workdir_init "$BUILD_FLAVOR"
-run_keygen_if_needed
-
-# Kernel optimization profile
-prompt_choice KERNEL_OPT_PROFILE "Kernel optimization profile" "${KERNEL_OPT_PROFILE:-battery}" "battery" "balanced" "performance"
-
-save_variables
-
-# Export config for build scripts
-export_config
-export ROOT_METHOD KERNEL_OPT_PROFILE
-export STORE_CLIENT ADD_AURORA REPLACE_STOCK_FDROID
-
-exec "$PROJECT_DIR/buildscripts/build-lineageos-$BUILD_FLAVOR"
