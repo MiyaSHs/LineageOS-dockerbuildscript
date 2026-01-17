@@ -3,133 +3,128 @@ set -eo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "$SCRIPT_DIR/VARIABLES" ]]; then
-  # auto-export everything from VARIABLES
-  set -a
-  source "$SCRIPT_DIR/VARIABLES"
-  set +a
-fi
-
-# Always set/export the payload dir
-: "${CUSTOM_APPS_PAYLOAD_DIR:="$SCRIPT_DIR/custom_apps_payload"}"
-export CUSTOM_APPS_PAYLOAD_DIR
-mkdir -p "$CUSTOM_APPS_PAYLOAD_DIR"
+# GitHub ZIP downloads and some filesystems can lose executable bits.
+# Make sure entrypoints are runnable before we exec() them.
+for f in \
+  "$PROJECT_DIR/main" \
+  "$PROJECT_DIR/buildscripts"/* \
+  "$PROJECT_DIR/scripts"/* \
+  "$PROJECT_DIR/scripts/modules"/*
+  do
+  [[ -f "$f" ]] && chmod +x "$f" || true
+done
 
 source "$PROJECT_DIR/scripts/bootstrap"
 source "$PROJECT_DIR/scripts/ui"
+source "$PROJECT_DIR/scripts/modules/workdir"
+source "$PROJECT_DIR/scripts/modules/manifests"
 source "$PROJECT_DIR/scripts/modules/customapps"
 source "$PROJECT_DIR/scripts/modules/stores"
+source "$PROJECT_DIR/scripts/modules/userscripts"
+
+# Default custom apps payload dir (can be overridden by modules/customapps)
+CUSTOM_APPS_PAYLOAD_DIR="${CUSTOM_APPS_PAYLOAD_DIR:-$PROJECT_DIR/custom_apps_payload}"
+mkdir -p "$CUSTOM_APPS_PAYLOAD_DIR"
+
+save_variables() {
+  local file="$PROJECT_DIR/VARIABLES"
+  {
+    echo "DEVICE_LIST=\"$DEVICE_LIST\""
+    echo "BRANCH_NAME=\"$BRANCH_NAME\""
+    echo "ANDROID_VERSION=\"$ANDROID_VERSION\""
+    echo "PARALLEL_JOBS=\"$PARALLEL_JOBS\""
+    echo "ZIP_UP_IMAGES=\"$ZIP_UP_IMAGES\""
+    echo "SIGN_BUILDS=\"$SIGN_BUILDS\""
+    echo "SIGNATURE_SPOOFING=\"$SIGNATURE_SPOOFING\""
+    echo "BUILD_FLAVOR=\"$BUILD_FLAVOR\""
+    echo "STORE_CLIENT=\"$STORE_CLIENT\""
+    echo "ADD_AURORA=\"$ADD_AURORA\""
+    echo "REPLACE_STOCK_FDROID=\"$REPLACE_STOCK_FDROID\""
+    echo "ROOT_METHOD=\"$ROOT_METHOD\""
+    echo "KERNEL_OPT_PROFILE=\"$KERNEL_OPT_PROFILE\""
+    echo "LOCAL_MIRROR=\"$LOCAL_MIRROR\""
+  } >"$file"
+  echo "Saved config to $file"
+}
 
 run_keygen_if_needed() {
+  # If signing requested, optionally generate keys.
   if [[ "${SIGN_BUILDS}" == "true" ]]; then
-    echo
-    echo "Signing is enabled."
-    read -rp "Generate / verify signing keys now? [Y/n]: " ans
-    ans="${ans:-Y}"
-    if [[ "$ans" =~ ^[Yy]$ ]]; then
-      bash "$PROJECT_DIR/scripts/genkeys"
+    if compgen -G "$KEYS_DIR/*.pk8" >/dev/null 2>&1; then
+      echo "Signing keys already exist in: $KEYS_DIR"
+    else
+      echo "Signing keys directory appears empty: $KEYS_DIR"
+    fi
+
+    local ans
+    ans=""
+    while [[ "$ans" != "y" && "$ans" != "n" ]]; do
+      read -r -p "Generate signing keys now? (y/n): " ans
+      ans="${ans,,}"
+    done
+
+    if [[ "$ans" == "y" ]]; then
+      "$PROJECT_DIR/scripts/genkeys"
     fi
   fi
 }
 
-save_variables() {
-  local out="$PROJECT_DIR/VARIABLES"
-  {
-    echo '# VARIABLES - saved config for LineageOS docker builds'
-    echo '# This file is sourced by main/build scripts.'
-    echo
-    printf 'DEVICE_LIST=%q\n' "$DEVICE_LIST"
-    printf 'BRANCH_NAME=%q\n' "$BRANCH_NAME"
-    echo
-    echo '# microG related: no | restricted | yes'
-    printf 'SIGNATURE_SPOOFING=%q\n' "$SIGNATURE_SPOOFING"
-    echo
-    echo '# true | false'
-    printf 'SIGN_BUILDS=%q\n' "$SIGN_BUILDS"
-    echo
-    echo '# e.g. 50G, 100G, 200G'
-    printf 'CCACHE_SIZE=%q\n' "$CCACHE_SIZE"
-    echo
-    echo '# integer, e.g. 2, 4, 8, 16'
-    printf 'PARALLEL_JOBS=%q\n' "$PARALLEL_JOBS"
-    echo
-    echo '# Kernel optimization: none | battery | balanced | performance'
-    printf 'KERNEL_OPT_PROFILE=%q\n' "$KERNEL_OPT_PROFILE"
-    echo
-    echo '# Store client (system app): none | fdroid | droidify | neostore'
-    printf 'STORE_CLIENT=%q\n' "$STORE_CLIENT"
-    echo
-    echo '# Add Aurora Store as system app: true | false'
-    printf 'ADD_AURORA_STORE=%q\n' "$ADD_AURORA_STORE"
-    echo
-    echo '# Try to remove FDroid + PrivExt from vendor/partner_gms (microG builds only): true | false'
-    printf 'REPLACE_STOCK_FDROID=%q\n' "$REPLACE_STOCK_FDROID"
-    echo
-    echo '# Root integration: none | kernelsu | kernelsu-next | sukisu-ultra'
-    printf 'ROOT_METHOD=%q\n' "$ROOT_METHOD"
-    echo
-    echo '# Optional (ignored if unsupported by container)'
-    printf 'ZIP_UP_IMAGES=%q\n' "$ZIP_UP_IMAGES"
-    printf 'LOCAL_MIRROR=%q\n' "$LOCAL_MIRROR"
-  } > "$out"
-  echo "Saved config to $out"
-}
+check_deps
 
-main() {
-  check_deps
+# Prompts
+prompt_nonempty DEVICE_LIST "Device codename(s) (space-separated)" "${DEVICE_LIST:-}"
+prompt_nonempty BRANCH_NAME "Lineage branch (e.g. lineage-23.0)" "${BRANCH_NAME:-}"
+prompt_nonempty ANDROID_VERSION "Android version (e.g. 16.0)" "${ANDROID_VERSION:-}"
+prompt_int PARALLEL_JOBS "Parallel repo sync/build jobs" "${PARALLEL_JOBS:-}"
 
-  if [[ ! -f "$PROJECT_DIR/VARIABLES" ]]; then
-    echo "First run tips:"
-    echo "  DEVICE_LIST  = your device codename (e.g. mondrian)"
-    echo "  BRANCH_NAME  = Lineage branch (e.g. lineage-23.0)"
-    echo
-  fi
+# Flavor selection
+prompt_choice BUILD_FLAVOR "Build flavor" "${BUILD_FLAVOR:-base}" "base" "microg"
 
-  # Ask every run, with previous selection as default
-  prompt_nonempty DEVICE_LIST "DEVICE_LIST" "$DEVICE_LIST"
-  prompt_nonempty BRANCH_NAME "BRANCH_NAME" "$BRANCH_NAME"
+# Signature spoofing only matters for microG but letting it be explicit is fine.
+prompt_choice SIGNATURE_SPOOFING "Signature spoofing mode" "${SIGNATURE_SPOOFING:-restricted}" "restricted" "yes" "no"
 
-  prompt_choice SIGNATURE_SPOOFING "SIGNATURE_SPOOFING:" "no" "restricted" "yes"
-  prompt_choice SIGN_BUILDS "SIGN_BUILDS:" "true" "false"
-  run_keygen_if_needed
+# Signing
+prompt_choice SIGN_BUILDS "Sign builds?" "${SIGN_BUILDS:-false}" "false" "true"
 
-  prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (e.g. 100G)" "$CCACHE_SIZE"
-  prompt_int PARALLEL_JOBS "PARALLEL_JOBS" "$PARALLEL_JOBS"
+# Store selection
+prompt_choice STORE_CLIENT "Which F-Droid client (if any)?" "${STORE_CLIENT:-none}" "none" "fdroid" "droidify" "neostore"
+prompt_choice ADD_AURORA "Also add Aurora Store?" "${ADD_AURORA:-false}" "false" "true"
 
-  prompt_choice KERNEL_OPT_PROFILE "Kernel optimization profile:" \
-    "none" "battery" "balanced" "performance"
-
-  prompt_choice BUILD_FLAVOR "Build flavor:" "base" "microg"
-
-  # Store selection
-  prompt_choice STORE_CLIENT "Store client (system app):" "none" "fdroid" "droidify" "neostore"
-  prompt_choice ADD_AURORA_STORE "Add Aurora Store (system app)?" "false" "true"
-
-  # Only relevant for microG builds (WITH_GMS=true pulls vendor/partner_gms which already includes FDroid)
-  if [[ "$BUILD_FLAVOR" == "microg" && "$STORE_CLIENT" != "fdroid" && "$STORE_CLIENT" != "none" ]]; then
-    REPLACE_STOCK_FDROID="true"
+# MicroG builds already ship FDroid (+ PrivExt) via vendor/partner_gms.
+# Replacing it requires modifying that repo, which can make repo-sync more fragile.
+# Default to keeping it unless the user explicitly opts in.
+if [[ "$BUILD_FLAVOR" == "microg" ]]; then
+  if [[ "$STORE_CLIENT" != "none" && "$STORE_CLIENT" != "fdroid" ]]; then
+    prompt_choice REPLACE_STOCK_FDROID \
+      "MicroG build includes FDroid + PrivExt. Remove them (experimental)?" \
+      "${REPLACE_STOCK_FDROID:-false}" "false" "true"
   else
     REPLACE_STOCK_FDROID="false"
   fi
-
-  # Apply store choices into CUSTOM_APPS, then optionally let user edit/add extras
-  stores_apply "$BUILD_FLAVOR"
-  custom_apps_prompt
-
-  prompt_choice ROOT_METHOD "Root method:" "none" "kernelsu" "kernelsu-next" "sukisu-ultra"
-
-  save_variables
-
-  export_config
-  export ROOT_METHOD
-
-  case "$BUILD_FLAVOR" in
-    base)   exec bash "$PROJECT_DIR/buildscripts/build-lineageos-base" ;;
-    microg) exec bash "$PROJECT_DIR/buildscripts/build-lineageos-microg" ;;
-  esac
-}
-
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  main "$@"
+else
+  REPLACE_STOCK_FDROID="false"
 fi
+
+# Apply store selections to CUSTOM_APPS (AUTO block)
+stores_apply
+
+# Custom apps list prompt (edit/clear/keep)
+custom_apps_prompt
+
+# Root selection
+prompt_choice ROOT_METHOD "Root method" "${ROOT_METHOD:-none}" "none" "kernelsu" "kernelsu-next" "sukisu-ultra"
+
+workdir_init "$BUILD_FLAVOR"
+run_keygen_if_needed
+
+# Kernel optimization profile
+prompt_choice KERNEL_OPT_PROFILE "Kernel optimization profile" "${KERNEL_OPT_PROFILE:-battery}" "battery" "balanced" "performance"
+
+save_variables
+
+# Export config for build scripts
+export_config
+export ROOT_METHOD KERNEL_OPT_PROFILE
+export STORE_CLIENT ADD_AURORA REPLACE_STOCK_FDROID
+
+exec "$PROJECT_DIR/buildscripts/build-lineageos-$BUILD_FLAVOR"

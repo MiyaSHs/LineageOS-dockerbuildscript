@@ -1,11 +1,58 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-# Minimal repoclean:
-# - Finds each repo checkout under work/src/** (or SRC_DIR if set)
-# - Deletes <repo_top>/kernel (so next repo sync re-fetches kernel cleanly)
+# repoclean
 #
-# This fixes: "Cannot remove project: uncommitted changes are present" for kernel/*
+# Goal:
+#   Fix `repo sync` failures like:
+#     Cannot remove project: uncommitted changes are present.
+#
+# Why this happens:
+#   Some steps (kernel optimization / root integration / store replacement) modify
+#   repo-managed projects (commonly under kernel/* and vendor/partner_gms).
+#   `repo sync` refuses to update/remove a project if it has local changes.
+#
+# What this does:
+#   - Iterates each Android checkout under work/src/** (or $SRC_DIR)
+#   - HARD-reverts and cleans git projects under:
+#       <top>/kernel/**
+#       <top>/vendor/partner_gms
+#   - Removes our injected (non-repo) directory:
+#       <top>/vendor/custom_apps
+#
+# This is MUCH faster and safer than deleting the whole kernel directory.
+
+_repoclean_git_repo() {
+  local repo_dir="$1"
+
+  # Only act on real git work trees
+  if git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "[repoclean]   git reset/clean: $repo_dir"
+    git -C "$repo_dir" reset --hard -q || true
+    git -C "$repo_dir" clean -fdx -q || true
+  fi
+}
+
+_repoclean_git_repos_under() {
+  local base_dir="$1"
+  [[ -d "$base_dir" ]] || return 0
+
+  # If the base itself is a git checkout, clean it too
+  _repoclean_git_repo "$base_dir"
+
+  # Repo-managed projects usually have a .git *file* at their root.
+  # Support both .git files and directories.
+  while IFS= read -r -d '' gitpath; do
+    local proj
+    proj="$(dirname "$gitpath")"
+    _repoclean_git_repo "$proj"
+  done < <(
+    find "$base_dir" \
+      -mindepth 1 -maxdepth 6 \
+      -name .git \
+      -print0 2>/dev/null || true
+  )
+}
 
 repoclean() {
   local project_dir src_root
@@ -14,17 +61,27 @@ repoclean() {
 
   [[ -d "$src_root" ]] || return 0
 
-  # For each Android repo top (directory containing .repo), purge kernel/
+  # For each Android repo top (directory containing .repo)
   while IFS= read -r -d '' repodir; do
-    local top kdir
+    local top
     top="$(dirname "$repodir")"
-    kdir="$top/kernel"
 
-    # Safety: don't follow symlinks, don't touch /
+    # Safety: don't touch /
     [[ "$top" != "/" ]] || continue
-    if [[ -d "$kdir" && ! -L "$kdir" ]]; then
-      echo "[repoclean] Removing: $kdir"
-      rm -rf "$kdir"
+
+    echo "[repoclean] Cleaning workspace: $top"
+
+    # Remove our injected custom apps tree if it's not itself a repo project.
+    if [[ -d "$top/vendor/custom_apps" && ! -e "$top/vendor/custom_apps/.git" ]]; then
+      echo "[repoclean]   removing injected: $top/vendor/custom_apps"
+      rm -rf "$top/vendor/custom_apps" || true
     fi
+
+    # Clean kernel-related projects (fast) instead of deleting kernel/ entirely.
+    _repoclean_git_repos_under "$top/kernel"
+
+    # If we ever patched partner_gms (e.g., FDroid replacement), clean it too.
+    _repoclean_git_repos_under "$top/vendor/partner_gms"
+
   done < <(find "$src_root" -maxdepth 3 -type d -name .repo -print0 2>/dev/null || true)
 }

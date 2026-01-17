@@ -2,393 +2,350 @@
 set -eo pipefail
 
 userscripts_assert_exec_mount() {
-  if command -v findmnt >/dev/null 2>&1; then
-    local opts
-    opts="$(findmnt -no OPTIONS -T "$USERSCRIPTS_DIR" 2>/dev/null || true)"
-    if echo "$opts" | grep -qw noexec; then
-      echo "ERROR: USERSCRIPTS_DIR is on a 'noexec' mount: $USERSCRIPTS_DIR"
-      echo "Mount options: $opts"
-      echo "Move this repo/workdir somewhere executable (or remount without noexec)."
-      exit 3
-    fi
+  local dir="$1"
+  
+  # If findmnt isn't available, we can't reliably check.
+  command -v findmnt >/dev/null 2>&1 || return 0
+
+  # If the mount has noexec, executing before.sh from it will fail with "Permission denied".
+  local opts
+  opts="$(findmnt -no OPTIONS -T "$dir" 2>/dev/null || true)"
+  if [[ "$opts" == *noexec* ]]; then
+    die "Userscripts dir ($dir) is on a noexec mount (options: $opts). Move WORKDIR/userscripts to an exec-enabled filesystem."
   fi
 }
 
 userscripts_write_before_sh() {
-  cat > "$USERSCRIPTS_DIR/before.sh" <<'EOF'
+  local file="$USERSCRIPTS_DIR/before.sh"
+
+  cat > "$file" <<'BEOF'
 #!/usr/bin/env bash
 set -eo pipefail
 
-# Find repo top
+echo "[before.sh] Running userscript..."
+
+# --- Locate repo top ---------------------------------------------------------
 TOP="$PWD"
 if [[ ! -d "$TOP/.repo" ]]; then
   TOP="$(find /srv/src -maxdepth 6 -type d -name .repo -print -quit 2>/dev/null | xargs -r dirname)"
 fi
 if [[ -z "$TOP" || ! -d "$TOP/.repo" ]]; then
-  echo "[before.sh] ERROR: Could not locate repo top (.repo). PWD=$PWD"
-  echo "[before.sh] Contents of /srv/src:"
-  ls -la /srv/src || true
-  exit 2
+  echo "[before.sh] ERROR: Could not locate repo top (.repo). PWD=$PWD" >&2
+  exit 1
 fi
+
 cd "$TOP"
 
-# Inject custom system apps (if provided)
-if [[ -d /srv/custom_apps/vendor/custom_apps ]]; then
-  echo "[before.sh] Installing custom apps into vendor/custom_apps..."
-  rm -rf "$TOP/vendor/custom_apps"
-  mkdir -p "$TOP/vendor"
-  cp -a /srv/custom_apps/vendor/custom_apps "$TOP/vendor/"
-fi
+echo "[before.sh] Repo top: $TOP"
 
-: "${REPLACE_STOCK_FDROID:=false}"
+# --- Patch known upstream build pitfalls ------------------------------------
+# Some trees can end up with an empty/whitespace line in modules.order, and
+# kernel/build/build.sh historically didn't guard against that (leading to
+# 'basename: Needs 1 argument' and 'cp: Needs 2 arguments').
+patch_kernel_build_scripts() {
+  local f
+  f="$(find "$TOP" -type f -path "*/kernel/build/build.sh" -print -quit 2>/dev/null || true)"
+  [[ -f "$f" ]] || return 0
 
-if [[ "$REPLACE_STOCK_FDROID" == "true" && -d "$TOP/vendor/partner_gms" ]]; then
-  echo "[before.sh] REPLACE_STOCK_FDROID=true -> removing stock FDroid modules + references (safe mode)."
-
-  # 1) Remove references from makefiles/xml, but DO NOT touch the module dirs themselves
-  remove_from_partner_gms() {
-    local token="$1"
-    local files
-
-    files="$(grep -RIl \
-      --include='*.mk' --include='*.xml' \
-      --exclude-dir='FDroid' \
-      --exclude-dir='F-Droid' \
-      --exclude-dir='FDroidPrivilegedExtension' \
-      --exclude-dir='F-DroidPrivilegedExtension' \
-      "$token" "$TOP/vendor/partner_gms" 2>/dev/null || true)"
-
-    [[ -n "$files" ]] || return 0
-
-    while IFS= read -r f; do
-      sed -i \
-        -e "s/[[:space:]]\b${token}\b[[:space:]]*/ /g" \
-        -e "s/[[:space:]]\{2,\}/ /g" \
-        "$f" || true
-    done <<<"$files"
-  }
-
-  remove_from_partner_gms "FDroid"
-  remove_from_partner_gms "FDroidPrivilegedExtension"
-  remove_from_partner_gms "F-Droid"
-  remove_from_partner_gms "F-DroidPrivilegedExtension"
-
-  # 2) Delete the module directories so Android.mk never gets parsed
-  rm -rf \
-    "$TOP/vendor/partner_gms/FDroid" \
-    "$TOP/vendor/partner_gms/F-Droid" \
-    "$TOP/vendor/partner_gms/FDroidPrivilegedExtension" \
-    "$TOP/vendor/partner_gms/F-DroidPrivilegedExtension"
-
-  echo "[before.sh] Stock FDroid directories removed."
-fi
-
-: "${ROOT_METHOD:=none}"
-: "${KERNEL_OPT_PROFILE:=battery}"
-: "${DEVICE_LIST:=}"
-: "${PARALLEL_JOBS:=4}"
-
-# SukiSU patchset (best-effort)
-: "${SUKISU_PATCH_REPO_URL:=https://github.com/SukiSU-Ultra/SukiSU_patch.git}"
-: "${SUKISU_APPLY_PATCHSET:=true}"
-
-# Kernel/root integration assumes a single device codename
-if [[ "$DEVICE_LIST" == *","* || "$DEVICE_LIST" == *" "* ]]; then
-  echo "[before.sh] Multiple devices in DEVICE_LIST='$DEVICE_LIST'. Kernel/root patching expects a single device build. Continuing without patching."
-  exit 0
-fi
-
-DEVICE="$DEVICE_LIST"
-
-locate_defconfig() {
-  # Try common patterns first (GKI), then fall back to fuzzy matches
-  local p
-  for p in \
-    "*/arch/arm64/configs/vendor/${DEVICE}_GKI.config" \
-    "*/arch/arm64/configs/vendor/${DEVICE}.config" \
-    "*/arch/arm64/configs/vendor/${DEVICE}_defconfig" \
-    "*/arch/arm64/configs/${DEVICE}_defconfig"
-  do
-    local hit
-    hit="$(find . -type f -path "$p" -print -quit 2>/dev/null || true)"
-    [[ -n "$hit" ]] && { echo "$hit"; return 0; }
-  done
-
-  # Fuzzy: anything containing device + GKI
-  local hit
-  hit="$(find . -type f -path "*/arch/arm64/configs/*" 2>/dev/null \
-    | awk -v d="$DEVICE" 'BEGIN{IGNORECASE=1} index($0,d)>0 && index($0,"gki")>0 {print; exit}')"
-  [[ -n "$hit" ]] && { echo "$hit"; return 0; }
-
-  # Fuzzy: anything containing device + defconfig
-  hit="$(find . -type f -path "*/arch/arm64/configs/*" 2>/dev/null \
-    | awk -v d="$DEVICE" 'BEGIN{IGNORECASE=1} index($0,d)>0 && index($0,"defconfig")>0 {print; exit}')"
-  [[ -n "$hit" ]] && { echo "$hit"; return 0; }
-
-  return 1
-}
-
-KCONF="$(locate_defconfig || true)"
-
-# If missing, try to trigger roomservice + sync now (best effort)
-if [[ -z "$KCONF" ]]; then
-  echo "[before.sh] Defconfig not present yet. Running breakfast + repo sync to fetch device/kernel repos..."
-  if [[ -f build/envsetup.sh ]]; then
-    # shellcheck disable=SC1091
-    source build/envsetup.sh
-    breakfast "$DEVICE" || true
-  else
-    echo "[before.sh] WARNING: build/envsetup.sh not found; cannot run breakfast."
+  if grep -q "skip empty modules.order lines" "$f"; then
+    echo "[before.sh] kernel/build/build.sh already patched."
+    return 0
   fi
 
-  repo sync -c -j"$PARALLEL_JOBS" --force-sync || true
-  KCONF="$(locate_defconfig || true)"
+  python3 - "$f" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(errors="ignore")
+marker = "skip empty modules.order lines"
+if marker in text:
+    sys.exit(0)
+
+import re
+
+pattern = re.compile(r'^\s*\[\[\s*"\$\{?ko\}?"\s*=\s*\\#\*\s*\]\]\s*&&\s*continue\s*$', re.M)
+m = pattern.search(text)
+if not m:
+    # File layout changed; don't risk patching the wrong place.
+    sys.exit(0)
+
+line = m.group(0)
+text = text.replace(
+    line,
+    line + "\n    [[ -z \"${ko}\" ]] && continue  # " + marker,
+    1,
+)
+path.write_text(text)
+PY
+
+  if grep -q "skip empty modules.order lines" "$f"; then
+    echo "[before.sh] Patched: $f"
+  else
+    echo "[before.sh] NOTE: kernel/build/build.sh found but patch did not apply (layout changed)." >&2
+  fi
+}
+
+patch_kernel_build_scripts
+
+# --- Custom apps injection ---------------------------------------------------
+# Always clear a previously injected vendor/custom_apps (so disabling custom apps
+# actually removes them on the next build). Do NOT delete if it's a real repo.
+if [[ -d "$TOP/vendor/custom_apps" && ! -e "$TOP/vendor/custom_apps/.git" ]]; then
+  echo "[before.sh] Clearing injected vendor/custom_apps..."
+  rm -rf "$TOP/vendor/custom_apps"
 fi
 
-if [[ -z "$KCONF" ]]; then
-  echo "[before.sh] ERROR: Could not find a defconfig for device '$DEVICE' under arch/arm64/configs/"
-  echo "[before.sh] Debug: some config candidates:"
-  find . -type f -path "*/arch/arm64/configs/*" -maxdepth 14 2>/dev/null | head -n 150 || true
-  exit 3
+if [[ -d /srv/custom_apps/vendor/custom_apps ]]; then
+  echo "[before.sh] Installing custom apps (vendor/custom_apps)..."
+  mkdir -p "$TOP/vendor"
+  cp -a /srv/custom_apps/vendor/custom_apps "$TOP/vendor/custom_apps"
 fi
 
-KERNEL_DIR="$(realpath "$(dirname "$KCONF")/../../../..")"
-DEFCONFIG_PATH="$(realpath "$KCONF")"
+# --- Optional: remove FDroid from microG partner_gms -------------------------
+# NOTE: This is best-effort and intentionally limited to partner_gms product
+# files. It can still break if upstream changes.
+if [[ "${REPLACE_STOCK_FDROID:-false}" == "true" ]]; then
+  echo "[before.sh] REPLACE_STOCK_FDROID=true (best-effort)"
 
-echo "[before.sh] Repo top:      $TOP"
-echo "[before.sh] Kernel dir:    $KERNEL_DIR"
-echo "[before.sh] Defconfig:     $DEFCONFIG_PATH"
-echo "[before.sh] Opt profile:   $KERNEL_OPT_PROFILE"
-echo "[before.sh] Root method:   $ROOT_METHOD"
+  for gmsdir in "$TOP/vendor/partner_gms" "$TOP/vendor/partner_gms-tv" "$TOP/vendor/partner_gms-car"; do
+    [[ -d "$gmsdir" ]] || continue
 
-echo "[before.sh] Exporting KERNEL_DIR, ARCH, DEFCONFIG, OUT_DIR for KernelSU integration."
-export KERNEL_DIR
-export ARCH=arm64
-export DEFCONFIG="$(basename "$DEFCONFIG_PATH")"
-export OUT_DIR="$KERNEL_DIR/out"
-cd "$KERNEL_DIR"
+    echo "[before.sh]  - Removing FDroid from: ${gmsdir#$TOP/}"
 
-git reset --hard
-git clean -fdx
+    if [[ -d "$gmsdir/products" ]]; then
+      # Remove standalone list entries (common style: one package per line).
+      for token in FDroid FDroidPrivilegedExtension F-Droid F-DroidPrivilegedExtension; do
+        find "$gmsdir/products" -type f \( -name "*.mk" -o -name "*.xml" \) -print0 2>/dev/null \
+          | xargs -0 -r sed -i -E \
+              -e "/^[[:space:]]*${token}[[:space:]]*(\\\\)?[[:space:]]*$/d"
+      done
+    fi
 
+    # If the repo uses top-level module dirs (like android_vendor_partner_gms),
+    # remove them so they're not parsed.
+    rm -rf "$gmsdir/FDroid" "$gmsdir/FDroidPrivilegedExtension" \
+           "$gmsdir/F-Droid" "$gmsdir/F-DroidPrivilegedExtension" || true
+  done
+fi
+
+# --- Kernel defconfig helpers ------------------------------------------------
 ensure_kconfig() {
-  local key="$1"
-  local val="$2"
-  local file="$3"
+  local file="$1"
+  local key="$2"
+  local val="$3"
+
   if grep -qE "^${key}=" "$file"; then
-    sed -i "s/^${key}=.*/${key}=${val}/" "$file"
+    sed -i "s|^${key}=.*|${key}=${val}|" "$file"
   elif grep -qE "^# ${key} is not set" "$file"; then
-    sed -i "s/^# ${key} is not set/${key}=${val}/" "$file"
+    sed -i "s|^# ${key} is not set|${key}=${val}|" "$file"
   else
     echo "${key}=${val}" >> "$file"
   fi
 }
 
 ensure_not_set() {
-  local key="$1"
-  local file="$2"
+  local file="$1"
+  local key="$2"
+
   if grep -qE "^${key}=" "$file"; then
-    sed -i "s/^${key}=.*/# ${key} is not set/" "$file"
+    sed -i "s|^${key}=.*|# ${key} is not set|" "$file"
   elif ! grep -qE "^# ${key} is not set" "$file"; then
     echo "# ${key} is not set" >> "$file"
   fi
 }
 
-kconfig_has() {
-  local sym="$1"
-  grep -Rqs --include='Kconfig*' "^[[:space:]]*config[[:space:]]\+${sym}\b" . 2>/dev/null
-}
+locate_defconfig() {
+  local device="$1"
 
-# Safe patch apply (no partial applies). Tries fuzz=0 then fuzz=3.
-patch_apply_safe() {
-  local dir="$1"
-  local patch_file="$2"
-  local label="${3:-patch}"
-  local fuzz
+  # Known-ish patterns (GKI vendor configs are common on modern devices)
+  local patterns=(
+    "*/arch/arm64/configs/vendor/${device}_GKI.config"
+    "*/arch/arm64/configs/vendor/${device}_defconfig"
+    "*/arch/arm64/configs/${device}_defconfig"
+    "*/arch/arm64/configs/${device}_GKI_defconfig"
+  )
 
-  for fuzz in 0 3; do
-    if ( cd "$dir" && patch -p1 --dry-run --batch --forward --fuzz="$fuzz" < "$patch_file" >/dev/null 2>&1 ); then
-      echo "[before.sh] Applying $label (fuzz=$fuzz): $(basename "$patch_file")"
-      ( cd "$dir" && patch -p1 --batch --forward --fuzz="$fuzz" < "$patch_file" )
+  local p
+  for p in "${patterns[@]}"; do
+    local hit
+    hit="$(find . -type f -path "$p" -print -quit 2>/dev/null || true)"
+    if [[ -n "$hit" ]]; then
+      echo "$hit"
       return 0
     fi
   done
 
-  echo "[before.sh] $label not applicable: $(basename "$patch_file")"
-  return 1
+  # Fallback: find any vendor config containing the device name.
+  find . -type f -path "*/arch/arm64/configs/*" 2>/dev/null \
+    | awk -v d="$device" 'tolower($0) ~ tolower(d) { print; exit }'
 }
 
-apply_sukisu_patchset() {
-  [[ "$SUKISU_APPLY_PATCHSET" == "true" ]] || return 0
-  command -v git >/dev/null 2>&1 || return 0
+# Device used for kernel tuning/root integration.
+DEVICE="${DEVICE_LIST:-}"
+if [[ -z "$DEVICE" ]]; then
+  echo "[before.sh] NOTE: DEVICE_LIST not set; skipping kernel optimization/root integration." >&2
+  exit 0
+fi
 
-  local tmp="/tmp/sukisu_patch.$$"
-  rm -rf "$tmp"
+KCONF="$(locate_defconfig "$DEVICE" || true)"
+if [[ -z "$KCONF" ]]; then
+  echo "[before.sh] ERROR: Could not locate a defconfig/vendor config for device '$DEVICE'." >&2
+  echo "[before.sh] Hint: ensure device sources are present (breakfast may be required)." >&2
+  exit 1
+fi
 
-  echo "[before.sh] Fetching SukiSU patchset..."
-  if ! git clone --depth 1 "$SUKISU_PATCH_REPO_URL" "$tmp" >/dev/null 2>&1; then
-    echo "[before.sh] WARNING: could not clone SukiSU_patch ($SUKISU_PATCH_REPO_URL). Skipping."
-    rm -rf "$tmp" || true
-    return 0
-  fi
+echo "[before.sh] Found kernel config: $KCONF"
 
-  # hide stuff patch (best-effort)
-  local hide_patch=""
-  hide_patch="$(find "$tmp" -type f -name '69_hide_stuff.patch' -print -quit 2>/dev/null || true)"
-  if [[ -n "$hide_patch" ]]; then
-    patch_apply_safe "$KERNEL_DIR" "$hide_patch" "SukiSU 69_hide_stuff" || true
-  fi
+# Determine kernel git project root robustly.
+KCONF_DIR="$(dirname "$KCONF")"
+if git -C "$KCONF_DIR" rev-parse --show-toplevel >/dev/null 2>&1; then
+  KERNEL_DIR="$(git -C "$KCONF_DIR" rev-parse --show-toplevel)"
+else
+  # Fallback (assumes vendor-style path .../arch/arm64/configs/vendor/<file>)
+  KERNEL_DIR="$(realpath "$KCONF_DIR/../../../..")"
+fi
 
-  rm -rf "$tmp" || true
-}
+DEFCONFIG="$(basename "$KCONF")"
+OUT_DIR="$KERNEL_DIR/out"
 
+# Export for any setup scripts we run *inside this userscript*.
+export KERNEL_DIR ARCH=arm64 DEFCONFIG OUT_DIR
+
+echo "[before.sh] Kernel dir: $KERNEL_DIR"
+
+echo "[before.sh] Resetting kernel tree to a clean state before applying changes..."
+cd "$KERNEL_DIR"
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git reset --hard
+  git clean -fdx
+fi
+
+# --- Kernel optimization profiles -------------------------------------------
 apply_kernel_profile() {
   local profile="$1"
-  local cfg="$2"
+  local defcfg="$2"
+
+  echo "[before.sh] Applying kernel optimization profile: $profile"
 
   case "$profile" in
-    none)
-      echo "[before.sh] KERNEL_OPT_PROFILE=none -> skipping kernel optimization."
-      return 0
-      ;;
-
     battery)
-      echo "[before.sh] Applying battery-leaning kernel optimizations..."
+      ensure_kconfig "$defcfg" CONFIG_LTO_CLANG y
+      ensure_kconfig "$defcfg" CONFIG_LTO_CLANG_THIN y
+      ensure_not_set "$defcfg" CONFIG_LTO_CLANG_FULL
 
-      ensure_kconfig CONFIG_LTO_CLANG y "$cfg"
-      ensure_kconfig CONFIG_LTO_CLANG_THIN y "$cfg"
-      ensure_not_set CONFIG_LTO_CLANG_FULL "$cfg"
-      ensure_not_set CONFIG_LTO_NONE "$cfg"
+      ensure_kconfig "$defcfg" CONFIG_CC_OPTIMIZE_FOR_SIZE y
 
-      ensure_kconfig CONFIG_CC_OPTIMIZE_FOR_SIZE y "$cfg"
+      ensure_not_set "$defcfg" CONFIG_DEBUG_INFO
+      ensure_not_set "$defcfg" CONFIG_KALLSYMS
+      ensure_not_set "$defcfg" CONFIG_KALLSYMS_ALL
 
-      ensure_kconfig CONFIG_ZSMALLOC y "$cfg"
-      ensure_kconfig CONFIG_ZRAM m "$cfg"
-      ensure_kconfig CONFIG_CRYPTO_ZSTD y "$cfg"
-      ensure_kconfig CONFIG_ZSTD_COMPRESS y "$cfg"
-      ensure_kconfig CONFIG_ZSTD_DECOMPRESS y "$cfg"
+      ensure_kconfig "$defcfg" CONFIG_ZRAM m
+      ensure_kconfig "$defcfg" CONFIG_ZSMALLOC y
 
-      ensure_kconfig CONFIG_MODULE_COMPRESS y "$cfg"
-      ensure_kconfig CONFIG_MODULE_COMPRESS_ZSTD y "$cfg"
-
-      ensure_not_set CONFIG_DEBUG_INFO "$cfg"
-      ensure_not_set CONFIG_GCOV_KERNEL "$cfg"
-      ensure_not_set CONFIG_KASAN "$cfg"
-      ensure_not_set CONFIG_KCSAN "$cfg"
-      ensure_not_set CONFIG_KFENCE "$cfg"
-      ensure_not_set CONFIG_DEBUG_KERNEL "$cfg"
-
-      ensure_kconfig CONFIG_LD_DEAD_CODE_DATA_ELIMINATION y "$cfg" || true
-      ensure_kconfig CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL y "$cfg" || true
+      ensure_kconfig "$defcfg" CONFIG_MODULE_COMPRESS y
+      ensure_kconfig "$defcfg" CONFIG_MODULE_COMPRESS_ZSTD y
       ;;
 
     balanced)
-      echo "[before.sh] Applying balanced kernel optimizations..."
+      ensure_kconfig "$defcfg" CONFIG_LTO_CLANG y
+      ensure_kconfig "$defcfg" CONFIG_LTO_CLANG_THIN y
+      ensure_not_set "$defcfg" CONFIG_LTO_CLANG_FULL
 
-      ensure_kconfig CONFIG_LTO_CLANG y "$cfg"
-      ensure_kconfig CONFIG_LTO_CLANG_THIN y "$cfg"
-      ensure_not_set CONFIG_LTO_CLANG_FULL "$cfg"
-      ensure_not_set CONFIG_LTO_NONE "$cfg"
+      ensure_kconfig "$defcfg" CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE y
 
-      ensure_not_set CONFIG_CC_OPTIMIZE_FOR_SIZE "$cfg"
-      ensure_kconfig CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE y "$cfg"
+      ensure_not_set "$defcfg" CONFIG_DEBUG_INFO
 
-      ensure_kconfig CONFIG_ZSMALLOC y "$cfg"
-      ensure_kconfig CONFIG_ZRAM m "$cfg"
-      ensure_kconfig CONFIG_CRYPTO_ZSTD y "$cfg"
-      ensure_kconfig CONFIG_ZSTD_COMPRESS y "$cfg"
-      ensure_kconfig CONFIG_ZSTD_DECOMPRESS y "$cfg"
-
-      ensure_kconfig CONFIG_MODULE_COMPRESS y "$cfg"
-      ensure_kconfig CONFIG_MODULE_COMPRESS_ZSTD y "$cfg"
-
-      ensure_kconfig CONFIG_LD_DEAD_CODE_DATA_ELIMINATION y "$cfg" || true
+      ensure_kconfig "$defcfg" CONFIG_ZRAM m
+      ensure_kconfig "$defcfg" CONFIG_ZSMALLOC y
       ;;
 
     performance)
-      echo "[before.sh] Applying performance kernel optimizations (ThinLTO + O3 if available)..."
+      ensure_kconfig "$defcfg" CONFIG_LTO_CLANG y
+      ensure_kconfig "$defcfg" CONFIG_LTO_CLANG_FULL y
+      ensure_not_set "$defcfg" CONFIG_LTO_CLANG_THIN
 
-      ensure_kconfig CONFIG_LTO_CLANG y "$cfg"
-      ensure_kconfig CONFIG_LTO_CLANG_THIN y "$cfg"
-      ensure_not_set CONFIG_LTO_CLANG_FULL "$cfg"
-      ensure_not_set CONFIG_LTO_NONE "$cfg"
+      ensure_kconfig "$defcfg" CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE y
 
-      ensure_not_set CONFIG_CC_OPTIMIZE_FOR_SIZE "$cfg"
+      ensure_kconfig "$defcfg" CONFIG_ZRAM m
+      ensure_kconfig "$defcfg" CONFIG_ZSMALLOC y
+      ;;
 
-      if kconfig_has CC_OPTIMIZE_FOR_PERFORMANCE_O3; then
-        ensure_kconfig CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3 y "$cfg"
-        ensure_not_set CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE "$cfg"
-      else
-        ensure_kconfig CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE y "$cfg"
-      fi
-
-      ensure_kconfig CONFIG_MODULE_COMPRESS y "$cfg"
-      ensure_kconfig CONFIG_MODULE_COMPRESS_ZSTD y "$cfg"
-      ensure_kconfig CONFIG_LD_DEAD_CODE_DATA_ELIMINATION y "$cfg" || true
+    none)
+      echo "[before.sh] Kernel optimization disabled."
       ;;
 
     *)
-      echo "[before.sh] Unknown KERNEL_OPT_PROFILE='$profile' (expected none|battery|balanced|performance)"
-      return 1
+      echo "[before.sh] Unknown kernel profile: $profile (skipping)" >&2
       ;;
   esac
 }
 
-apply_kernel_profile "$KERNEL_OPT_PROFILE" "$DEFCONFIG_PATH"
+KPROFILE="${KERNEL_OPT_PROFILE:-none}"
+apply_kernel_profile "$KPROFILE" "$KCONF"
 
-# ---- Root integration (optional) ----
-if [[ "$ROOT_METHOD" == "none" ]]; then
-  echo "[before.sh] ROOT_METHOD=none -> skipping root integration."
-  exit 0
-fi
+# --- Root integration --------------------------------------------------------
+# NOTE:
+#  - These upstream setup scripts can and do change.
+#  - If you see build failures after enabling a root method, try:
+#      1) ROOT_METHOD=none (confirm build works)
+#      2) Switch root method, or pin a known-good tag/commit.
+ROOT_METHOD_CHOICE="${ROOT_METHOD:-none}"
 
-case "$ROOT_METHOD" in
+apply_sukisu_patchset() {
+  local repo_url="https://github.com/SukiSU-Ultra/SukiSU_patch"
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  echo "[before.sh] Applying SukiSU patchset (best-effort)..."
+  if git clone --depth 1 "$repo_url" "$tmpdir" >/dev/null 2>&1; then
+    if [[ -f "$tmpdir/patches/69_hide_stuff.patch" ]]; then
+      patch -p1 --forward --fuzz=3 < "$tmpdir/patches/69_hide_stuff.patch" || true
+    fi
+  else
+    echo "[before.sh] NOTE: Could not clone SukiSU patch repo; skipping patchset." >&2
+  fi
+
+  rm -rf "$tmpdir"
+}
+
+case "$ROOT_METHOD_CHOICE" in
   kernelsu)
-    echo "[before.sh] Integrating KernelSU..."
+    echo "[before.sh] Integrating KernelSU (builtin)..."
     curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
-    ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
-    ensure_not_set CONFIG_KSU_DEBUG "$DEFCONFIG_PATH"
-
-    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KRETPROBES y "$DEFCONFIG_PATH"
-
-    #ensure_kconfig CONFIG_MODULES y "$DEFCONFIG_PATH"
-    #ensure_kconfig CONFIG_KALLSYMS y "$DEFCONFIG_PATH"
     ;;
+
   kernelsu-next)
-    echo "[before.sh] Integrating KernelSU Next..."
+    echo "[before.sh] Integrating KernelSU-Next (builtin)..."
     curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
-    ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
-    ensure_not_set CONFIG_KSU_DEBUG "$DEFCONFIG_PATH"
-
-    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KRETPROBES y "$DEFCONFIG_PATH"
     ;;
+
   sukisu-ultra)
-    echo "[before.sh] Integrating SukiSU Ultra..."
+    echo "[before.sh] Integrating SukiSU-Ultra (builtin)..."
     curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
-    ensure_kconfig CONFIG_KSU y "$DEFCONFIG_PATH"
-    ensure_not_set CONFIG_KSU_DEBUG "$DEFCONFIG_PATH"
 
-    ensure_kconfig CONFIG_KPROBES y "$DEFCONFIG_PATH"
-    ensure_kconfig CONFIG_KRETPROBES y "$DEFCONFIG_PATH"
+    # SukiSU KPM
+    ensure_kconfig "$KCONF" CONFIG_KPM y
 
-    ensure_kconfig CONFIG_KPM y "$DEFCONFIG_PATH"
-
-    # Apply SukiSU_patch patches (this fixes syscall-hook build failures)
     apply_sukisu_patchset
     ;;
+
+  none)
+    echo "[before.sh] Root integration disabled."
+    ;;
+
   *)
-    echo "[before.sh] Unknown ROOT_METHOD='$ROOT_METHOD'"
-    exit 10
+    echo "[before.sh] Unknown ROOT_METHOD='$ROOT_METHOD_CHOICE' (skipping)." >&2
     ;;
 esac
 
-echo "[before.sh] Root integration done: $ROOT_METHOD"
-EOF
+echo "[before.sh] Done."
+exit 0
+BEOF
 
-  chmod 0755 "$USERSCRIPTS_DIR/before.sh"
+  chmod 0755 "$file"
 
-  userscripts_assert_exec_mount
-  [[ -x "$USERSCRIPTS_DIR/before.sh" ]] || { echo "ERROR: before.sh is not executable"; exit 4; }
+  userscripts_assert_exec_mount "$USERSCRIPTS_DIR"
+
+  [[ -x "$file" ]] || die "before.sh not executable at $file"
 }
