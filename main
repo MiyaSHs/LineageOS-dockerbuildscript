@@ -1,230 +1,176 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+cd "$PROJECT_DIR"
 
-# Make sure scripts are runnable even if GitHub/zip stripped +x
-for f in "$PROJECT_DIR/main" "$PROJECT_DIR/buildscripts/"* "$PROJECT_DIR/scripts/"* "$PROJECT_DIR/scripts/modules/"*; do
-  [[ -f "$f" ]] && chmod +x "$f" || true
-done
+VARIABLES_FILE="$PROJECT_DIR/VARIABLES"
 
-# Load framework + modules
-source "$PROJECT_DIR/scripts/bootstrap"
-source "$PROJECT_DIR/scripts/ui"
-source "$PROJECT_DIR/scripts/modules/workdir"
-source "$PROJECT_DIR/scripts/modules/customapps"
-source "$PROJECT_DIR/scripts/modules/stores"
+# Load previously saved defaults (if present).
+if [[ -f "$VARIABLES_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$VARIABLES_FILE"
+fi
 
-# -----------------------------------------------------------------------------
-# OVERRIDE prompt_* so we ALWAYS prompt once per run (Enter keeps previous)
-# -----------------------------------------------------------------------------
+# ---- helpers ----
+
+prompt() {
+  local var="$1" msg="$2" def="${3-}"
+  local cur="${!var-}"
+  local show_def="$def"
+  [[ -n "$cur" ]] && show_def="$cur"
+
+  if [[ -n "$show_def" ]]; then
+    read -r -p "${msg} [${show_def}]: " ans
+    ans="${ans:-$show_def}"
+  else
+    read -r -p "${msg}: " ans
+  fi
+  printf -v "$var" '%s' "$ans"
+}
+
 prompt_nonempty() {
-  local var_name="$1"
-  local prompt="$2"
-  local explicit_default="${3-}"
-  declare -n ref="$var_name"
-
-  local default="${explicit_default:-${ref-}}"
-
-  while true; do
-    if [[ -n "$default" ]]; then
-      read -rp "$prompt [$default]: " ref
-      ref="${ref:-$default}"
-    else
-      read -rp "$prompt: " ref
-    fi
-    [[ -n "${ref}" ]] && return 0
+  local var="$1" msg="$2" def="${3-}"
+  while :; do
+    prompt "$var" "$msg" "$def"
+    [[ -n "${!var-}" ]] && break
+    echo "Please enter a value."
   done
 }
 
-prompt_int() {
-  local var_name="$1"
-  local prompt="$2"
-  local explicit_default="${3-}"
-  declare -n ref="$var_name"
+prompt_yesno() {
+  local var="$1" msg="$2" def="${3:-true}"
+  local cur="${!var-}"
+  local d="$def"
+  [[ -n "$cur" ]] && d="$cur"
 
-  local default="${explicit_default:-${ref-}}"
+  local suffix="[y/N]"
+  [[ "$d" == "true" ]] && suffix="[Y/n]"
 
-  while true; do
-    if [[ -n "$default" ]]; then
-      read -rp "$prompt [$default]: " ref
-      ref="${ref:-$default}"
-    else
-      read -rp "$prompt: " ref
+  while :; do
+    read -r -p "${msg} ${suffix}: " ans
+    ans="${ans,,}"
+    if [[ -z "$ans" ]]; then
+      printf -v "$var" '%s' "$d"
+      return 0
     fi
-    [[ "$ref" =~ ^[0-9]+$ ]] && return 0
-    echo "Please enter a valid integer."
+    case "$ans" in
+      y|yes) printf -v "$var" 'true'; return 0 ;;
+      n|no)  printf -v "$var" 'false'; return 0 ;;
+    esac
+    echo "Please answer y or n."
   done
 }
 
 prompt_choice() {
-  local var_name="$1"
-  local prompt="$2"
-  shift 2
-  local options=("$@")
-  declare -n ref="$var_name"
-
-  local current="${ref-}"
-  local default_idx=1
-
-  # If current matches an option, that option becomes default
-  local i=1
-  for opt in "${options[@]}"; do
-    if [[ -n "$current" && "$opt" == "$current" ]]; then
-      default_idx="$i"
-      break
-    fi
-    ((i++))
-  done
+  local var="$1"; shift
+  local -a opts=("$@")
+  local cur="${!var-}"
 
   echo
-  echo "$prompt"
-  i=1
-  for opt in "${options[@]}"; do
-    if (( i == default_idx )); then
-      echo "  $i) $opt (default)"
-    else
-      echo "  $i) $opt"
-    fi
-    ((i++))
+  for i in "${!opts[@]}"; do
+    printf "%d) %s\n" "$((i+1))" "${opts[$i]}"
   done
 
-  while true; do
-    read -rp "Choose [1-${#options[@]}] (Enter = $default_idx): " choice
-    if [[ -z "$choice" ]]; then
-      ref="${options[$((default_idx-1))]}"
-      return 0
+  local def_idx=""
+  if [[ -n "$cur" ]]; then
+    for i in "${!opts[@]}"; do
+      if [[ "${opts[$i]}" == "$cur" ]]; then
+        def_idx="$((i+1))"
+        break
+      fi
+    done
+  fi
+
+  while :; do
+    if [[ -n "$def_idx" ]]; then
+      read -r -p "Choose [1-${#opts[@]}] (Enter = ${def_idx}): " ans
+      ans="${ans:-$def_idx}"
+    else
+      read -r -p "Choose [1-${#opts[@]}]: " ans
     fi
-    [[ "$choice" =~ ^[0-9]+$ ]] || continue
-    (( choice >= 1 && choice <= ${#options[@]} )) || continue
-    ref="${options[$((choice-1))]}"
+
+    [[ "$ans" =~ ^[0-9]+$ ]] || { echo "Enter a number."; continue; }
+    (( ans >= 1 && ans <= ${#opts[@]} )) || { echo "Out of range."; continue; }
+
+    printf -v "$var" '%s' "${opts[$((ans-1))]}"
     return 0
   done
 }
 
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
 normalize_device_list() {
-  # Accept "a b c" or "a,b,c" and normalize to "a,b,c"
-  local s="$1"
-  s="$(echo "$s" | tr ' ' ',' | sed -E 's/,+/,/g; s/^,|,$//g')"
-  echo "$s"
+  local in="$1"
+  # turn spaces into commas, collapse repeats, strip leading/trailing commas
+  in="${in// /,}"
+  in="$(echo "$in" | tr -s ',' )"
+  in="${in#,}"
+  in="${in%,}"
+  echo "$in"
 }
 
 save_variables() {
-  local out="$PROJECT_DIR/VARIABLES"
-  {
-    echo '# Auto-generated config (safe to edit). Do not commit.'
-    printf 'DEVICE_LIST=%q\n' "$DEVICE_LIST"
-    printf 'BRANCH_NAME=%q\n' "$BRANCH_NAME"
-    printf 'ANDROID_VERSION=%q\n' "${ANDROID_VERSION:-16.0}"
-    printf 'SIGNATURE_SPOOFING=%q\n' "$SIGNATURE_SPOOFING"
-    printf 'SIGN_BUILDS=%q\n' "$SIGN_BUILDS"
-    printf 'CCACHE_SIZE=%q\n' "$CCACHE_SIZE"
-    printf 'PARALLEL_JOBS=%q\n' "$PARALLEL_JOBS"
-    printf 'KERNEL_OPT_PROFILE=%q\n' "$KERNEL_OPT_PROFILE"
-    printf 'BUILD_FLAVOR=%q\n' "$BUILD_FLAVOR"
-    printf 'STORE_CLIENT=%q\n' "$STORE_CLIENT"
-    printf 'ADD_AURORA_STORE=%q\n' "$ADD_AURORA_STORE"
-    printf 'REPLACE_STOCK_FDROID=%q\n' "$REPLACE_STOCK_FDROID"
-    printf 'ROOT_METHOD=%q\n' "$ROOT_METHOD"
-    printf 'ZIP_UP_IMAGES=%q\n' "$ZIP_UP_IMAGES"
-    printf 'LOCAL_MIRROR=%q\n' "$LOCAL_MIRROR"
-  } > "$out"
-  chmod 0600 "$out" 2>/dev/null || true
-  echo "Saved config to $out"
+  cat > "$VARIABLES_FILE" <<EOF
+# Auto-generated by main
+ANDROID_VERSION="${ANDROID_VERSION}"
+PARALLEL_JOBS="${PARALLEL_JOBS}"
+BRANCH_NAME="${BRANCH_NAME}"
+DEVICE_LIST="${DEVICE_LIST}"
+BUILD_FLAVOR="${BUILD_FLAVOR}"
+ROOT_METHOD="${ROOT_METHOD}"
+KERNEL_OPT_PROFILE="${KERNEL_OPT_PROFILE}"
+REPLACE_STOCK_FDROID="${REPLACE_STOCK_FDROID}"
+SIGN_BUILDS="${SIGN_BUILDS}"
+EOF
+  echo "Saved config to $VARIABLES_FILE"
 }
 
-run_keygen_if_needed() {
-  # Ensure work dirs exist so keys go into work/keys
-  workdir_init "$BUILD_FLAVOR"
+# ---- main prompts ----
+# Important: NO "one-time" prompts. Everything is asked every run,
+# but pressing Enter accepts the previous selection from VARIABLES.
 
-  if [[ "${SIGN_BUILDS}" == "true" ]]; then
-    echo
-    echo "Signing is enabled."
-    read -rp "Generate / verify signing keys now? [Y/n]: " ans
-    ans="${ans:-Y}"
-    if [[ "$ans" =~ ^[Yy]$ ]]; then
-      bash "$PROJECT_DIR/scripts/genkeys"
-    fi
-  fi
-}
+prompt_nonempty ANDROID_VERSION "Android version (e.g. 16.0)" "${ANDROID_VERSION:-16.0}"
+prompt_nonempty PARALLEL_JOBS "Parallel repo sync/build jobs" "${PARALLEL_JOBS:-6}"
 
-main() {
-  check_deps
+echo
+prompt_nonempty BRANCH_NAME "Branch name (e.g. lineage-23.0)" "${BRANCH_NAME:-lineage-23.0}"
+prompt_nonempty DEVICE_LIST "Device codename(s), comma-separated" "${DEVICE_LIST:-}"
+DEVICE_LIST="$(normalize_device_list "$DEVICE_LIST")"
 
-  # Show tips if VARIABLES doesn’t exist yet (not a question, just info)
-  if [[ ! -f "$PROJECT_DIR/VARIABLES" ]]; then
-    echo "Tips:"
-    echo "  DEVICE_LIST: codename(s). Examples: mondrian  OR  mondrian,foo"
-    echo "  BRANCH_NAME: lineage-23.0 (etc)"
-    echo
-  fi
+echo
+echo "Build flavor:"
+# FIXED: only real options; no duplicates.
+prompt_choice BUILD_FLAVOR "base" "microg"
 
-  # Ask every run (Enter keeps previous)
-  prompt_nonempty DEVICE_LIST "DEVICE_LIST (device codename(s))" "$DEVICE_LIST"
-  DEVICE_LIST="$(normalize_device_list "$DEVICE_LIST")"
+echo
+echo "Root method:"
+prompt_choice ROOT_METHOD "none" "kernelsu" "kernelsu-next" "sukisu-ultra"
 
-  prompt_nonempty BRANCH_NAME "BRANCH_NAME (Lineage branch)" "$BRANCH_NAME"
+echo
+echo "Kernel optimization profile:"
+prompt_choice KERNEL_OPT_PROFILE "none" "battery" "balanced" "performance"
 
-  : "${ANDROID_VERSION:=16.0}"
-  prompt_nonempty ANDROID_VERSION "Android version (informational)" "$ANDROID_VERSION"
+echo
+prompt_yesno REPLACE_STOCK_FDROID "Replace stock FDroid (when present via partner_gms)?" "${REPLACE_STOCK_FDROID:-false}"
 
-  prompt_choice SIGNATURE_SPOOFING "SIGNATURE_SPOOFING:" "no" "restricted" "yes"
-  prompt_choice SIGN_BUILDS "SIGN_BUILDS (sign builds?):" "true" "false"
+echo
+prompt_yesno SIGN_BUILDS "Sign builds (use keys/ folder)?" "${SIGN_BUILDS:-false}"
 
-  prompt_nonempty CCACHE_SIZE "CCACHE_SIZE (e.g. 100G)" "$CCACHE_SIZE"
-  prompt_int PARALLEL_JOBS "PARALLEL_JOBS (repo sync/build)" "$PARALLEL_JOBS"
-
-  prompt_choice KERNEL_OPT_PROFILE "Kernel optimization profile:" \
-    "none" "battery" "balanced" "performance"
-
-  # FIXED: only real options here (no injected default) -> no duplicates
-  BUILD_FLAVOR="${BUILD_FLAVOR:-base}"
-  prompt_choice BUILD_FLAVOR "Build flavor:" "base" "microg"
-
-  prompt_choice STORE_CLIENT "Store client (system app):" \
-    "none" "fdroid" "droidify" "neostore"
-  prompt_choice ADD_AURORA_STORE "Add Aurora Store (system app)?" "false" "true"
-
-  # Only relevant for microg builds (vendor/partner_gms includes FDroid by default)
-  if [[ "$BUILD_FLAVOR" == "microg" && "$STORE_CLIENT" != "fdroid" && "$STORE_CLIENT" != "none" ]]; then
-    prompt_choice REPLACE_STOCK_FDROID \
-      "Remove stock FDroid+PrivExt from vendor/partner_gms? (experimental)" \
-      "false" "true"
-  else
-    REPLACE_STOCK_FDROID="false"
-  fi
-
-  # Apply store selection into CUSTOM_APPS and optionally edit/add extras
-  stores_apply "$BUILD_FLAVOR"
-  custom_apps_prompt
-
-  prompt_choice ROOT_METHOD "Root method:" "none" "kernelsu" "kernelsu-next" "sukisu-ultra"
-
-  # Generate keys after signing choice (as you requested)
-  run_keygen_if_needed
-
-  # Save config each run (Enter keeps defaults)
-  echo
-  read -rp "Save these settings to VARIABLES? [Y/n]: " save_ans
-  save_ans="${save_ans:-Y}"
-  if [[ "$save_ans" =~ ^[Yy]$ ]]; then
-    save_variables
-  fi
-
-  # Export config for buildscripts
-  export_config
-  export ROOT_METHOD BUILD_FLAVOR REPLACE_STOCK_FDROID ANDROID_VERSION
-
-  case "$BUILD_FLAVOR" in
-    base)   exec bash "$PROJECT_DIR/buildscripts/build-lineageos-base" ;;
-    microg) exec bash "$PROJECT_DIR/buildscripts/build-lineageos-microg" ;;
-    *) die "Unknown BUILD_FLAVOR: $BUILD_FLAVOR" ;;
-  esac
-}
-
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  main "$@"
+echo
+prompt_yesno SAVE_VARS "Save to VARIABLES?" "true"
+if [[ "$SAVE_VARS" == "true" ]]; then
+  save_variables
 fi
+
+# ---- dispatch ----
+case "$BUILD_FLAVOR" in
+  base)
+    bash "$PROJECT_DIR/buildscripts/build-lineageos-base"
+    ;;
+  microg)
+    bash "$PROJECT_DIR/buildscripts/build-lineageos-microg"
+    ;;
+  *)
+    echo "Unknown build flavor: $BUILD_FLAVOR"
+    exit 2
+    ;;
+esac
